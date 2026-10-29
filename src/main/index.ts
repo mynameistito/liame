@@ -151,7 +151,7 @@ function registerIpc(): void {
   handle('markAllRead', (path: string) => service().markAllRead(path))
   handle('saveDraft', async (draft: Draft) => {
     if (!account) throw new Error('No account is configured.')
-    return service().saveDraft(await buildRaw(account, draft), draft.draftUid)
+    return service().saveDraft(await buildRaw(account, draft, await keptAttachments(draft)), draft.draftUid)
   })
   handle('contextMenu', (items: MenuItemSpec[]) => popupMenu(items))
   ipcMain.on('liame:focus', () => {
@@ -172,7 +172,7 @@ function registerIpc(): void {
   })
   handle('send', async (draft: Draft) => {
     if (!account) throw new Error('No account is configured.')
-    await sendDraft(account, draft)
+    await sendDraft(account, draft, await keptAttachments(draft))
     // A sent draft should not linger in Drafts.
     if (draft.draftUid) await service().deleteDraft(draft.draftUid).catch(() => {})
   })
@@ -193,6 +193,15 @@ function registerIpc(): void {
   handle('setLabel', (item: ClassifyItem, label: string | null) => setLabel(item, label))
 }
 
+/** Loads the attachments a reopened draft still carries from its saved copy. */
+function keptAttachments(draft: Draft) {
+  if (!draft.draftUid || !draft.kept?.length) return Promise.resolve([])
+  return service().draftAttachments(
+    draft.draftUid,
+    draft.kept.map((k) => k.partId),
+  )
+}
+
 /** Shows a native menu and resolves with the chosen item's id, or null when dismissed. */
 function popupMenu(items: MenuItemSpec[]): Promise<string | null> {
   return new Promise((resolve) => {
@@ -203,7 +212,7 @@ function popupMenu(items: MenuItemSpec[]): Promise<string | null> {
           : {
               label: item.label,
               enabled: item.enabled !== false,
-              type: item.checked === undefined ? 'normal' : 'checkbox',
+              type: item.submenu ? 'submenu' : item.checked === undefined ? 'normal' : 'checkbox',
               checked: item.checked,
               // Shown as a hint only; the renderer owns the actual key handling.
               accelerator: item.accelerator,

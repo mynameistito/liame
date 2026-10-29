@@ -90,6 +90,12 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   const [paletteQuery, setPaletteQuery] = useState('')
   const [contacts, setContacts] = useState<Record<string, Contact>>(loadContacts)
   const [sections, setSections] = usePersistent<string[]>('sections', [])
+  const [windowWidth, setWindowWidth] = useState(window.innerWidth)
+  useEffect(() => {
+    const onResize = () => setWindowWidth(window.innerWidth)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
   const [layout, setLayout] = usePersistent('layout', { sidebar: 228, list: 372, assistant: 340, sidebarHidden: false, listHidden: false })
 
   const listRef = useRef<HTMLDivElement>(null)
@@ -106,6 +112,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   const inboxMaxUid = useRef(0)
   /** A message to open once its mailbox has loaded (from a notification click). */
   const pendingOpen = useRef<{ path: string; uid: number } | null>(null)
+  const focusSearch = useRef(false)
   const openRef = useRef<(uid: number) => void>(() => {})
 
   const prefs = settings?.prefs ?? DEFAULT_PREFS
@@ -276,13 +283,15 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         const n = new Notification(title, { body })
         n.onclick = () => {
           api.focusWindow()
+          // Anything that could hide the message goes: label view, filters, search, bulk picks.
           setActiveLabel(null)
-          if (uid === undefined) return setCurrent(inbox.path)
-          if (currentRef.current === inbox.path) openRef.current(uid)
-          else {
-            pendingOpen.current = { path: inbox.path, uid }
-            setCurrent(inbox.path)
-          }
+          setFilter('all')
+          setQuery('')
+          setResults(null)
+          setChecked([])
+          if (uid !== undefined) pendingOpen.current = { path: inbox.path, uid }
+          if (currentRef.current === inbox.path) void refreshList(inbox.path, false)
+          else setCurrent(inbox.path)
         }
       }
       if (fresh.length > 3) show(`${fresh.length} new messages`, fresh.slice(0, 3).map((m) => displayName(m.from)).join(', '))
@@ -364,7 +373,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   openRef.current = (uid) => void open(uid)
 
   /** What actions apply to: the picked messages, or else the open one. */
-  const targets = useMemo(() => (checked.length ? checked : selected !== null ? [selected] : []), [checked, selected])
+  const targets = useMemo(() => (checked.length > 1 ? checked : selected !== null ? [selected] : []), [checked, selected])
 
   /** Click handling for rows: plain opens, ⌘ toggles a pick, ⇧ picks a range from the open message. */
   const pick = useCallback(
@@ -376,16 +385,19 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         return
       }
       if (mods.meta) {
-        setChecked((list) => {
-          const base = list.length === 0 && selected !== null && selected !== uid ? [selected] : list
-          return base.includes(uid) ? base.filter((x) => x !== uid) : [...base, uid]
-        })
+        const base = checked.length === 0 && selected !== null && selected !== uid ? [selected] : checked
+        const next = base.includes(uid) ? base.filter((x) => x !== uid) : [...base, uid]
+        // A single remaining pick is just the open message.
+        if (next.length === 1) {
+          setChecked([])
+          void open(next[0])
+        } else setChecked(next)
         return
       }
       setChecked([])
       void open(uid)
     },
-    [selected, visible, open],
+    [selected, visible, checked, open],
   )
 
   const step = useCallback(
@@ -485,7 +497,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   const markAllRead = useCallback(async () => {
     const path = current
     patchMessages(
-      messages.filter((m) => !m.seen).map((m) => m.uid),
+      [...messages, ...(results ?? [])].filter((m) => !m.seen).map((m) => m.uid),
       (m) => ({ ...m, seen: true }),
     )
     setMailboxes((boxes) => boxes.map((b) => (b.path === path ? { ...b, unread: 0 } : b)))
@@ -496,7 +508,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
       notify(errorMessage(err))
       void refreshList(path, false)
     }
-  }, [current, messages, patchMessages, notify, refreshList])
+  }, [current, messages, results, patchMessages, notify, refreshList])
 
   const reply = useCallback(
     (mode: ReplyMode, ai?: { autoDraft?: boolean; text?: string }) => {
@@ -538,6 +550,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         subject: detail.subject === '(no subject)' ? '' : detail.subject,
         text: detail.text ?? '',
         attachments: [],
+        kept: detail.attachments.map((a) => ({ partId: a.partId, filename: a.filename })),
         inReplyTo: detail.inReplyTo,
         references: detail.references,
         draftUid: detail.uid,
@@ -588,7 +601,15 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         if (inbox) (setActiveLabel(null), setCurrent(inbox.path))
       },
     },
-    search: { run: () => (layout.listHidden && toggleList(), searchRef.current?.focus()) },
+    search: {
+      run: () => {
+        if (fitted.listShown) return searchRef.current?.focus()
+        focusSearch.current = true
+        // Bring the list back: unhide it, or close the assistant that squeezed it out.
+        if (layout.listHidden) toggleList()
+        else setAssistantOpen(false)
+      },
+    },
     filterAll: { run: () => setFilter('all') },
     filterUnread: { run: () => setFilter('unread') },
     filterFlagged: { run: () => setFilter('flagged') },
@@ -722,11 +743,37 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
     api.setZoom(prefs.zoom)
   }, [prefs.accent, prefs.zoom])
 
+  // Shrink panes (assistant, then list, then sidebar) so the reader keeps its minimum in narrow windows.
+  const fitted = useMemo(() => {
+    let over =
+      (layout.sidebarHidden ? 0 : layout.sidebar) + (layout.listHidden ? 0 : layout.list) + (assistantOpen ? layout.assistant : 0) + 360 - windowWidth
+    const shrink = (width: number, min: number, shown: boolean) => {
+      if (!shown || over <= 0) return width
+      const cut = Math.min(over, Math.max(0, width - min))
+      over -= cut
+      return width - cut
+    }
+    const assistant = shrink(layout.assistant, 280, assistantOpen)
+    const list = shrink(layout.list, 280, !layout.listHidden)
+    const sidebar = shrink(layout.sidebar, 180, !layout.sidebarHidden)
+    // Still too tight with the assistant open: give the list's space to the reader until the window grows.
+    const listShown = !layout.listHidden && !(over > 0 && assistantOpen)
+    return { sidebar, list, assistant, listShown }
+  }, [layout, assistantOpen, windowWidth])
+
+  // The search field only exists while the list is shown.
+  useEffect(() => {
+    if (fitted.listShown && focusSearch.current) {
+      focusSearch.current = false
+      searchRef.current?.focus()
+    }
+  }, [fitted.listShown])
+
   const columns = [
-    !layout.sidebarHidden && `${layout.sidebar}px`,
-    !layout.listHidden && `${layout.list}px`,
-    'minmax(360px, 1fr)',
-    assistantOpen && `${layout.assistant}px`,
+    !layout.sidebarHidden && `${fitted.sidebar}px`,
+    fitted.listShown && `${fitted.list}px`,
+    'minmax(0, 1fr)',
+    assistantOpen && `${fitted.assistant}px`,
   ]
     .filter(Boolean)
     .join(' ')
@@ -740,7 +787,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
 
   return (
     <div
-      className={`app density-${prefs.density} ${assistantOpen ? 'with-assistant' : ''} ${layout.sidebarHidden ? 'no-sidebar' : ''} ${layout.listHidden ? 'no-list' : ''}`}
+      className={`app density-${prefs.density} ${assistantOpen ? 'with-assistant' : ''} ${layout.sidebarHidden ? 'no-sidebar' : ''} ${fitted.listShown ? '' : 'no-list'}`}
       style={{ gridTemplateColumns: columns }}
     >
       {!layout.sidebarHidden && (
@@ -772,7 +819,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         onSignOut={onSignOut}
       />
       )}
-      {!layout.listHidden && (
+      {fitted.listShown && (
       <MessageList
         listRef={listRef}
         searchRef={searchRef}
@@ -819,8 +866,8 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         onTrash={() => void move('trash')}
         onToggleSeen={() => void toggle('seen')}
         onToggleFlag={() => void toggle('flagged')}
-        listHidden={layout.listHidden}
-        onShowList={toggleList}
+        listHidden={!fitted.listShown}
+        onShowList={() => (layout.listHidden ? toggleList() : setAssistantOpen(false))}
         inDrafts={inDrafts}
         onEditDraft={editDraft}
         bulk={
@@ -874,7 +921,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
       {paletteOpen && <Palette items={paletteItems()} initialQuery={paletteQuery} onClose={() => setPaletteOpen(false)} />}
       {!layout.sidebarHidden && (
         <Resizer
-          at={layout.sidebar}
+          at={fitted.sidebar}
           min={180}
           max={360}
           onResize={(w) => setLayout((l) => ({ ...l, sidebar: w }))}
@@ -882,10 +929,10 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
           onReset={() => setLayout((l) => ({ ...l, sidebar: 228 }))}
         />
       )}
-      {!layout.listHidden && (
+      {fitted.listShown && (
         <Resizer
-          at={layout.list}
-          offset={layout.sidebarHidden ? 0 : layout.sidebar}
+          at={fitted.list}
+          offset={layout.sidebarHidden ? 0 : fitted.sidebar}
           min={280}
           max={640}
           onResize={(w) => setLayout((l) => ({ ...l, list: w }))}
@@ -895,7 +942,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
       )}
       {assistantOpen && (
         <Resizer
-          at={layout.assistant}
+          at={fitted.assistant}
           fromRight
           min={280}
           max={560}

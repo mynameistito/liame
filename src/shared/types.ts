@@ -80,6 +80,8 @@ export interface Draft {
   references?: string[]
   /** UID of the saved copy in Drafts this draft replaces when saved again or sent. */
   draftUid?: number
+  /** Attachments already stored in that saved copy (by mailparser index), carried into the next save or send. */
+  kept?: Array<{ partId: number; filename: string }>
 }
 
 export type MoveTarget = SpecialUse | { path: string }

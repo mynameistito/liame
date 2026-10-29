@@ -58,7 +58,10 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
   }, [])
 
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }))
-  const dirty = (['to', 'cc', 'bcc', 'subject', 'text'] as const).some((k) => draft[k] !== saved[k]) || draft.attachments.length !== saved.attachments.length
+  const dirty =
+    (['to', 'cc', 'bcc', 'subject', 'text'] as const).some((k) => draft[k] !== saved[k]) ||
+    draft.attachments.length !== saved.attachments.length ||
+    (draft.kept?.length ?? 0) !== (saved.kept?.length ?? 0)
 
   function close() {
     if (writing) cancel.current?.()
@@ -72,11 +75,24 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
     if (savingDraft) return false
     setSavingDraft(true)
     setError('')
+    const submitted = draft
     try {
-      const uid = await api.saveDraft(draft)
-      const next = { ...draft, draftUid: uid ?? undefined }
-      setDraft(next)
-      setSaved(next)
+      const uid = await api.saveDraft(submitted)
+      // The new copy holds every attachment (stored ones first), so they are all "kept" from now on.
+      const stored = uid
+        ? {
+            draftUid: uid,
+            kept: [...(submitted.kept ?? []).map((k) => k.filename), ...submitted.attachments.map((p) => p.split('/').pop() ?? 'attachment')].map((filename, partId) => ({ partId, filename })),
+            attachments: [] as string[],
+          }
+        : { draftUid: undefined }
+      // Only the ids change; text typed while the save was in flight stays.
+      setDraft((current) => ({
+        ...current,
+        ...stored,
+        attachments: uid ? current.attachments.filter((p) => !submitted.attachments.includes(p)) : current.attachments,
+      }))
+      setSaved({ ...submitted, ...stored })
       onDraftSaved()
       return true
     } catch (err) {
@@ -301,8 +317,16 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
           )}
         </div>
 
-        {draft.attachments.length > 0 && (
+        {(draft.attachments.length > 0 || (draft.kept?.length ?? 0) > 0) && (
           <div className="composer-files">
+            {draft.kept?.map((k) => (
+              <span className="chip" key={`kept-${k.partId}`}>
+                {k.filename}
+                <button className="icon-button" style={{ width: 18, height: 18 }} onClick={() => set({ kept: draft.kept?.filter((x) => x.partId !== k.partId) })}>
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
             {draft.attachments.map((path) => (
               <span className="chip" key={path}>
                 {path.split('/').pop()}

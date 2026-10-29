@@ -224,6 +224,14 @@ export class MailService {
     return appended ? (appended.uid ?? null) : null
   }
 
+  /** Attachments of a saved draft, to carry into its next version. */
+  async draftAttachments(uid: number, partIds: number[]): Promise<Array<{ filename: string; content: Buffer }>> {
+    const drafts = await this.pathFor('drafts')
+    const out = []
+    for (const partId of partIds) out.push(await this.attachment(drafts, uid, partId))
+    return out
+  }
+
   async deleteDraft(uid: number): Promise<void> {
     const drafts = await this.pathFor('drafts')
     await this.withMailbox(drafts, (client) => client.messageDelete([uid], { uid: true }))
