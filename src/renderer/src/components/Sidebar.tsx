@@ -38,13 +38,14 @@ interface Props {
   activeLabel: string | null
   onLabel: (id: string | null) => void
   onSettings: () => void
+  composeHint: string
   onSelect: (path: string) => void
   onCompose: () => void
   onRefresh: () => void
   onSignOut: () => void
 }
 
-export function Sidebar({ account, mailboxes, current, status, refreshing, labels, labelCounts, activeLabel, onLabel, onSettings, onSelect, onCompose, onRefresh, onSignOut }: Props) {
+export function Sidebar({ account, mailboxes, current, status, refreshing, labels, labelCounts, activeLabel, onLabel, onSettings, composeHint, onSelect, onCompose, onRefresh, onSignOut }: Props) {
   const special = mailboxes.filter((box) => box.specialUse)
   const folders = mailboxes.filter((box) => !box.specialUse)
 
@@ -59,7 +60,7 @@ export function Sidebar({ account, mailboxes, current, status, refreshing, label
       <button className="compose-button" onClick={onCompose}>
         <SquarePen size={15} />
         New message
-        <kbd>C</kbd>
+        <kbd>{composeHint}</kbd>
       </button>
 
       <nav className="nav">

@@ -16,6 +16,7 @@ import type {
   MessageDetail,
   MessagePage,
   MessageSummary,
+  MoveResult,
   SpecialUse,
 } from '../shared/types'
 
@@ -177,16 +178,25 @@ export class MailService {
     })
   }
 
-  async move(path: string, uids: number[], target: SpecialUse): Promise<void> {
+  async move(path: string, uids: number[], target: SpecialUse): Promise<MoveResult | null> {
     const destination = await this.pathFor(target)
-    await this.withMailbox(path, async (client) => {
+    const result = await this.withMailbox(path, async (client) => {
       if (destination === path) {
         // Deleting from Trash removes the message for good.
         if (target === 'trash') await client.messageDelete(uids, { uid: true })
-        return
+        return null
       }
-      await client.messageMove(uids, destination, { uid: true })
+      const moved = await client.messageMove(uids, destination, { uid: true })
+      // UIDPLUS tells us the new UIDs; without it the move cannot be undone precisely.
+      const newUids = moved && moved.uidMap ? uids.map((uid) => moved.uidMap!.get(uid)).filter((uid): uid is number => uid !== undefined) : []
+      return newUids.length === uids.length ? { from: path, to: destination, uids: newUids } : null
     })
+    this.emit({ type: 'mailboxes-changed' })
+    return result
+  }
+
+  async undoMove(move: MoveResult): Promise<void> {
+    await this.withMailbox(move.to, (client) => client.messageMove(move.uids, move.from, { uid: true }))
     this.emit({ type: 'mailboxes-changed' })
   }
 
@@ -349,7 +359,8 @@ async function parsePreview(source: Buffer): Promise<string> {
   try {
     const parsed = await simpleParser(source, { skipImageLinks: true, skipTextLinks: true })
     // mailparser's own HTML-to-text uppercases headings and draws rules, which reads loud in a list.
-    const text = parsed.html ? htmlToText(parsed.html) : (parsed.text ?? '')
+    const fromHtml = parsed.html ? htmlToText(parsed.html) : ''
+    const text = fromHtml.trim() ? fromHtml : (parsed.text ?? '')
     return text
       .split('\n')
       .filter((line) => !/^\s*>/.test(line) && !/^On .+ wrote:\s*$/.test(line.trim()))
@@ -368,8 +379,10 @@ const ENTITIES: Record<string, string> = { nbsp: ' ', amp: '&', lt: '<', gt: '>'
 
 function htmlToText(html: string): string {
   return html
-    .replace(/<(head|style|script|title)[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<!--[\s\S]*?-->/g, ' ')
+    // Previews are cut at PREVIEW_BYTES, so a style block or tag can be unclosed; drop those to the end too.
+    .replace(/<(head|style|script|title)\b[\s\S]*?(<\/\1>|$)/gi, ' ')
+    .replace(/<!--[\s\S]*?(-->|$)/g, ' ')
+    .replace(/<[^>]*$/, ' ')
     .replace(/<(br|\/p|\/div|\/tr|\/h\d|\/li)[^>]*>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&(#x?[0-9a-f]+|\w+);/gi, (match, name: string) => {

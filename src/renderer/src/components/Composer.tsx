@@ -1,6 +1,7 @@
 import { LoaderCircle, Paperclip, Sparkles, Square, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { Draft, MessageContext, RewriteMode, Snippet } from '../../../shared/types'
+import type { Draft, MessageContext, RewriteMode, ShortcutOverrides, Snippet } from '../../../shared/types'
+import { comboOf, formatCombo, isPlainKey, keymap, keysFor } from '../commands'
 import { aiStream, api, errorMessage } from '../lib'
 
 interface Props {
@@ -11,6 +12,7 @@ interface Props {
   /** Start writing a reply as soon as the composer opens. */
   autoDraft?: boolean
   snippets: Snippet[]
+  shortcuts: ShortcutOverrides
   onClose: () => void
   onSent: () => void
 }
@@ -23,7 +25,7 @@ const REWRITES: Array<[RewriteMode, string]> = [
   ['fix', 'Fix spelling'],
 ]
 
-export function Composer({ initial, title, context, autoDraft, snippets, onClose, onSent }: Props) {
+export function Composer({ initial, title, context, autoDraft, snippets, shortcuts, onClose, onSent }: Props) {
   const [draft, setDraft] = useState(initial)
   const [showCc, setShowCc] = useState(Boolean(initial.cc || initial.bcc))
   const [sending, setSending] = useState(false)
@@ -83,7 +85,7 @@ export function Composer({ initial, title, context, autoDraft, snippets, onClose
       await stream({ kind: 'reply', message: context, instruction: instruction.trim() || undefined, draft: started }, (text) => `${text.trim()}${quote}`)
     } else {
       if (!instruction.trim()) return setError('Tell the AI what to write.')
-      await stream({ kind: 'compose', instruction: instruction.trim(), subject: draft.subject }, (text) => text.trim())
+      await stream({ kind: 'compose', instruction: instruction.trim(), subject: draft.subject }, (text) => `${text.trim()}${quote}`)
     }
     setInstruction('')
   }
@@ -134,11 +136,15 @@ export function Composer({ initial, title, context, autoDraft, snippets, onClose
 
   // Window-level so the shortcuts work even when focus has fallen out of the composer (e.g. after the snippet picker closes).
   const onKey = useRef<(e: KeyboardEvent) => void>(() => {})
+  const keys = keymap(shortcuts, true)
   onKey.current = (e) => {
-    if (e.key === 'Enter' && e.metaKey) {
+    const combo = comboOf(e) ?? ''
+    // Everything in the composer is a text field, so single keys always type.
+    const command = isPlainKey(combo) ? undefined : keys.get(combo)
+    if (command === 'send') {
       e.preventDefault()
       void send()
-    } else if (e.key === 'j' && e.metaKey) {
+    } else if (command === 'snippets') {
       e.preventDefault()
       setSnippetQuery((q) => (q === null ? '' : null))
     } else if (e.key === 'Escape') {
@@ -300,13 +306,13 @@ export function Composer({ initial, title, context, autoDraft, snippets, onClose
           ) : error ? (
             <span className="error">{error}</span>
           ) : (
-            <span className="hint-inline">{writing ? 'Writing…' : 'Select text to rewrite · ⌘J snippets'}</span>
+            <span className="hint-inline">{writing ? 'Writing…' : `Select text to rewrite · ${formatCombo(keysFor('snippets', shortcuts)[0] ?? '')} snippets`}</span>
           )}
           <span className="spacer" />
           <button className="primary" onClick={send} disabled={sending || writing || !draft.to.trim()}>
             {sending && <LoaderCircle size={13} className="spin" />}
             {sending ? 'Sending' : 'Send'}
-            {!sending && <kbd>⌘↵</kbd>}
+            {!sending && keysFor('send', shortcuts)[0] && <kbd>{formatCombo(keysFor('send', shortcuts)[0])}</kbd>}
           </button>
         </div>
       </div>

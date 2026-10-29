@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import type { AiEvent, LiameApi, MailEvent } from '../shared/types'
 
 const call =
@@ -19,6 +19,8 @@ const api: LiameApi = {
   getMessage: call('getMessage'),
   setFlags: call('setFlags'),
   move: call('move'),
+  undoMove: call('undoMove'),
+  setZoom: (factor) => webFrame.setZoomFactor(Math.min(1.4, Math.max(0.8, factor))),
   saveAttachment: call('saveAttachment'),
   pickAttachments: call('pickAttachments'),
   send: call('send'),

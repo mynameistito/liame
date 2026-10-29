@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { AccountConfig, AiTask, ClassifyItem, Draft, MailEvent, SettingsPatch, SpecialUse } from '../shared/types'
+import type { AccountConfig, AiTask, ClassifyItem, Draft, MailEvent, MoveResult, SettingsPatch, SpecialUse } from '../shared/types'
 import { clearAccount, loadAccount, storeAccount, toPublic } from './account'
 import { cancelTask, closeAi, listModels, startTask } from './ai'
 import { classify, setLabel } from './labels'
@@ -127,6 +127,7 @@ function registerIpc(): void {
     service().setFlags(path, uids, flags),
   )
   handle('move', (path: string, uids: number[], target: SpecialUse) => service().move(path, uids, target))
+  handle('undoMove', (move: MoveResult) => service().undoMove(move))
   handle('saveAttachment', async (path: string, uid: number, partId: number) => {
     const file = await service().attachment(path, uid, partId)
     const result = await dialog.showSaveDialog(window!, { defaultPath: join(app.getPath('downloads'), file.filename) })

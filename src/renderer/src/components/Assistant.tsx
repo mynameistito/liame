@@ -8,10 +8,11 @@ const SUGGESTIONS = ['Summarize this', 'What do they want from me?', 'List actio
 interface Props {
   message: MessageDetail | null
   onClose: () => void
+  closeHint: string
   onUseAsReply: (text: string) => void
 }
 
-export function Assistant({ message, onClose, onUseAsReply }: Props) {
+export function Assistant({ message, onClose, closeHint, onUseAsReply }: Props) {
   const [turns, setTurns] = useState<ChatTurn[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
@@ -61,7 +62,7 @@ export function Assistant({ message, onClose, onUseAsReply }: Props) {
         <Sparkles size={15} color="var(--accent)" />
         <span className="assistant-title">Assistant</span>
         <span className="spacer" />
-        <button className="icon-button" title="Close  ⌘K" onClick={onClose}>
+        <button className="icon-button" title={`Close  ${closeHint}`} onClick={onClose}>
           <X size={15} />
         </button>
       </div>

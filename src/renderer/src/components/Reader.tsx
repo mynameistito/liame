@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { LabelDef, MessageDetail, MessageSummary } from '../../../shared/types'
+import type { CommandId } from '../commands'
 import { api, avatarColor, displayName, fileSize, initials, longDate } from '../lib'
 
 export type ReplyMode = 'reply' | 'all' | 'forward'
@@ -31,6 +32,12 @@ interface Props {
   onAssistant: () => void
   onDraftReply: () => void
   onLabel: (label: string | null) => void
+  /** The first shortcut bound to a command, formatted for tooltips. */
+  hint: (id: CommandId) => string
+  darken: boolean
+  onToggleDarken: () => void
+  blockImages: boolean
+  onLoadImages: () => void
   onReply: (mode: ReplyMode) => void
   onArchive: () => void
   onTrash: () => void
@@ -38,10 +45,7 @@ interface Props {
   onToggleFlag: () => void
 }
 
-export function Reader({ summary, detail, loading, error, mailbox, inTrash, labels, assistantOpen, ...actions }: Props) {
-  const [darken, setDarken] = useState(true)
-  // Original colors are a per-message escape hatch; every message opens darkened.
-  useEffect(() => setDarken(true), [summary?.uid])
+export function Reader({ summary, detail, loading, error, mailbox, inTrash, labels, assistantOpen, hint, darken, blockImages, ...actions }: Props) {
 
   if (!summary) {
     return (
@@ -63,25 +67,25 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
   return (
     <main className="pane reader">
       <div className="toolbar drag">
-        <ToolButton title="Reply  R" onClick={() => actions.onReply('reply')} icon={<Reply size={16} />} />
-        <ToolButton title="Reply all  A" onClick={() => actions.onReply('all')} icon={<ReplyAll size={16} />} />
-        <ToolButton title="Forward  F" onClick={() => actions.onReply('forward')} icon={<Forward size={16} />} />
+        <ToolButton title={`Reply  ${hint('reply')}`} onClick={() => actions.onReply('reply')} icon={<Reply size={16} />} />
+        <ToolButton title={`Reply all  ${hint('replyAll')}`} onClick={() => actions.onReply('all')} icon={<ReplyAll size={16} />} />
+        <ToolButton title={`Forward  ${hint('forward')}`} onClick={() => actions.onReply('forward')} icon={<Forward size={16} />} />
         <span className="sep" />
-        <ToolButton title="Archive  E" onClick={actions.onArchive} icon={<Archive size={16} />} />
-        <ToolButton title={inTrash ? 'Delete permanently  #' : 'Move to Trash  #'} onClick={actions.onTrash} icon={<Trash2 size={16} />} />
+        <ToolButton title={`Archive  ${hint('archive')}`} onClick={actions.onArchive} icon={<Archive size={16} />} />
+        <ToolButton title={`${inTrash ? 'Delete permanently' : 'Move to Trash'}  ${hint('trash')}`} onClick={actions.onTrash} icon={<Trash2 size={16} />} />
         <span className="sep" />
         <ToolButton
-          title={message.seen ? 'Mark as unread  U' : 'Mark as read  U'}
+          title={`${message.seen ? 'Mark as unread' : 'Mark as read'}  ${hint('toggleRead')}`}
           onClick={actions.onToggleSeen}
           icon={message.seen ? <Mail size={16} /> : <MailOpen size={16} />}
         />
-        <ToolButton title={message.flagged ? 'Unflag  S' : 'Flag  S'} onClick={actions.onToggleFlag} on={message.flagged} icon={<Flag size={16} fill={message.flagged ? 'currentColor' : 'none'} />} />
+        <ToolButton title={`${message.flagged ? 'Unflag' : 'Flag'}  ${hint('toggleFlag')}`} onClick={actions.onToggleFlag} on={message.flagged} icon={<Flag size={16} fill={message.flagged ? 'currentColor' : 'none'} />} />
         <span className="spacer" />
-        <ToolButton title="Assistant  ⌘K" onClick={actions.onAssistant} on={assistantOpen} icon={<Sparkles size={15} />} />
+        <ToolButton title={`Assistant  ${hint('assistant')}`} onClick={actions.onAssistant} on={assistantOpen} icon={<Sparkles size={15} />} />
         {detail?.html && (
           <ToolButton
             title={darken ? 'Show original colors' : 'Darken message'}
-            onClick={() => setDarken((d) => !d)}
+            onClick={actions.onToggleDarken}
             icon={darken ? <Sun size={15} /> : <Moon size={15} />}
           />
         )}
@@ -127,7 +131,15 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
 
           {error && <div className="error-banner" style={{ margin: 0 }}>{error}</div>}
           {loading && !detail && <LoaderCircle size={16} className="spin" color="var(--text-3)" />}
-          {detail && (detail.html ? <EmailFrame html={detail.html} darken={darken} /> : <PlainText text={detail.text ?? ''} />)}
+          {detail?.html && blockImages && hasRemoteImages(detail.html) && (
+            <div className="images-bar">
+              Remote images are blocked.
+              <button className="ghost" onClick={actions.onLoadImages}>
+                Load images
+              </button>
+            </div>
+          )}
+          {detail && (detail.html ? <EmailFrame html={detail.html} darken={darken} blockImages={blockImages} /> : <PlainText text={detail.text ?? ''} />)}
 
           {detail && detail.attachments.length > 0 && (
             <div className="attachments">
@@ -145,7 +157,7 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
 
           {detail && (
             <div className="reply-bar">
-              <button className="ai" onClick={actions.onDraftReply}>
+              <button className="ai" onClick={actions.onDraftReply} title={hint('draftReply')}>
                 <Sparkles size={14} /> Draft reply
               </button>
               <button onClick={() => actions.onReply('reply')}>
@@ -192,13 +204,20 @@ body { filter: invert(1) hue-rotate(180deg); }
 img, video, picture, canvas, svg image, [style*="background-image"], [background] { filter: invert(1) hue-rotate(180deg); }
 `
 
-function EmailFrame({ html, darken }: { html: string; darken: boolean }) {
+function hasRemoteImages(html: string): boolean {
+  return /<img[^>]+src\s*=\s*["']?https?:|url\(\s*["']?https?:|background\s*=\s*["']?https?:/i.test(html)
+}
+
+// Inherits the window CSP; this narrows images to inline data so trackers and remote pictures never load.
+const BLOCK_IMAGES = `<meta http-equiv="Content-Security-Policy" content="img-src data: blob:">`
+
+function EmailFrame({ html, darken, blockImages }: { html: string; darken: boolean; blockImages: boolean }) {
   const ref = useRef<HTMLIFrameElement>(null)
   const [height, setHeight] = useState(120)
   const srcDoc = useMemo(
     () =>
-      `<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><style>${BASE_CSS}${darken ? DARKEN_CSS : ''}</style></head><body>${html}</body></html>`,
-    [html, darken],
+      `<!doctype html><html><head><meta charset="utf-8">${blockImages ? BLOCK_IMAGES : ''}<base target="_blank"><style>${BASE_CSS}${darken ? DARKEN_CSS : ''}</style></head><body>${html}</body></html>`,
+    [html, darken, blockImages],
   )
 
   useEffect(() => {

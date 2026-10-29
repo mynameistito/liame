@@ -2,7 +2,7 @@ import { app, safeStorage } from 'electron'
 import { existsSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { LabelDef, PublicSettings, Settings, SettingsPatch } from '../shared/types'
+import type { LabelDef, Prefs, PublicSettings, Settings, SettingsPatch } from '../shared/types'
 
 const DEFAULT_LABELS: LabelDef[] = [
   { id: 'reply', name: 'To reply', color: '#3b8cff', description: 'A real person wrote to me directly and expects an answer, a decision, or an action from me.' },
@@ -13,6 +13,18 @@ const DEFAULT_LABELS: LabelDef[] = [
   { id: 'newsletters', name: 'Newsletters', color: '#a78bfa', description: 'Newsletters, digests, product announcements, marketing, and promotions.' },
 ]
 
+const DEFAULT_PREFS: Prefs = {
+  markRead: 'immediately',
+  afterMove: 'next',
+  remoteImages: true,
+  notifications: true,
+  signature: '',
+  accent: '#3b8cff',
+  density: 'comfortable',
+  zoom: 1,
+  darkenEmails: true,
+}
+
 const DEFAULTS: Settings = {
   ai: { provider: 'chatgpt', model: '', codexPath: '', openaiKey: '' },
   labels: { engine: 'typesafe', typesafeKey: '', list: DEFAULT_LABELS },
@@ -20,6 +32,8 @@ const DEFAULTS: Settings = {
     { id: 'thanks', name: 'Thanks, will review', body: 'Thanks! I will take a look and get back to you by the end of the week.' },
     { id: 'call', name: 'Suggest a call', body: 'Would a quick call be easier? I am free most afternoons this week, just pick a time that works for you.' },
   ],
+  prefs: DEFAULT_PREFS,
+  shortcuts: {},
 }
 
 // Settings hold API keys, so they are encrypted with the Keychain-backed key like the account.
@@ -40,6 +54,8 @@ export async function loadSettings(): Promise<Settings> {
     ai: { ...DEFAULTS.ai, ...stored.ai },
     labels: { ...DEFAULTS.labels, ...stored.labels },
     snippets: stored.snippets ?? DEFAULTS.snippets,
+    prefs: { ...DEFAULTS.prefs, ...stored.prefs },
+    shortcuts: stored.shortcuts ?? {},
   }
   return cached
 }
@@ -50,6 +66,8 @@ export async function updateSettings(patch: SettingsPatch): Promise<Settings> {
     ai: { ...current.ai, ...withSecret(patch.ai, 'openaiKey', current.ai.openaiKey) },
     labels: { ...current.labels, ...withSecret(patch.labels, 'typesafeKey', current.labels.typesafeKey) },
     snippets: patch.snippets ?? current.snippets,
+    prefs: { ...current.prefs, ...patch.prefs },
+    shortcuts: patch.shortcuts ?? current.shortcuts,
   }
   await writeFile(file(), await safeStorage.encryptStringAsync(JSON.stringify(next)), { mode: 0o600 })
   cached = next
@@ -72,6 +90,8 @@ export function toPublicSettings(s: Settings): PublicSettings {
     ai: { ...ai, hasOpenaiKey: Boolean(openaiKey(s)) },
     labels: { ...labels, hasTypesafeKey: Boolean(typesafeKey(s)) },
     snippets: s.snippets,
+    prefs: s.prefs,
+    shortcuts: s.shortcuts,
   }
 }
 

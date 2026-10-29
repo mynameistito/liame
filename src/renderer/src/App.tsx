@@ -1,15 +1,41 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Draft, Mailbox, MailEvent, MessageContext, MessageDetail, MessageSummary, PublicAccount, PublicSettings, SpecialUse } from '../../shared/types'
+import type {
+  Draft,
+  Mailbox,
+  MailEvent,
+  MessageContext,
+  MessageDetail,
+  MessageSummary,
+  MoveResult,
+  Prefs,
+  PublicAccount,
+  PublicSettings,
+  SpecialUse,
+} from '../../shared/types'
+import { COMMANDS, type CommandId, comboOf, formatCombo, isPlainKey, keymap, keysFor } from './commands'
 import { Assistant } from './components/Assistant'
 import { Composer } from './components/Composer'
 import { MessageList, type Filter } from './components/MessageList'
+import { Palette, type PaletteItem } from './components/Palette'
 import { Reader, type ReplyMode } from './components/Reader'
-import { Settings } from './components/Settings'
+import { Settings, type SettingsTab } from './components/Settings'
 import { Setup } from './components/Setup'
 import { Sidebar } from './components/Sidebar'
 import { api, classifyItem, displayName, errorMessage, formatAddress, longDate, toContext } from './lib'
 
 const EMPTY_DRAFT: Draft = { to: '', cc: '', bcc: '', subject: '', text: '', attachments: [] }
+
+const DEFAULT_PREFS: Prefs = {
+  markRead: 'immediately',
+  afterMove: 'next',
+  remoteImages: true,
+  notifications: true,
+  signature: '',
+  accent: '#3b8cff',
+  density: 'comfortable',
+  zoom: 1,
+  darkenEmails: true,
+}
 
 export function App() {
   const [account, setAccount] = useState<PublicAccount | null | undefined>(undefined)
@@ -44,15 +70,20 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   const [detailError, setDetailError] = useState('')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<MessageSummary[] | null>(null)
+  const [searchRun, setSearchRun] = useState(0)
   const [filter, setFilter] = useState<Filter>('all')
   const [composer, setComposer] = useState<{ draft: Draft; title: string; context?: MessageContext; autoDraft?: boolean } | null>(null)
   const [settings, setSettings] = useState<PublicSettings | null>(null)
-  const [showSettings, setShowSettings] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null)
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const [assistantOpen, setAssistantOpen] = useState(false)
   const [activeLabel, setActiveLabel] = useState<string | null>(null)
   const [status, setStatus] = useState<MailEvent['status']>('connecting')
   const [refreshing, setRefreshing] = useState(false)
-  const [toast, setToast] = useState('')
+  const [toast, setToast] = useState<{ text: string; undo?: boolean } | null>(null)
+  const [lastMove, setLastMove] = useState<MoveResult | null>(null)
+  const [darken, setDarken] = useState(true)
+  const [imagesAllowed, setImagesAllowed] = useState<number | null>(null)
 
   const listRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
@@ -61,6 +92,17 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   const detailRequest = useRef(0)
   const loadingMore = useRef(false)
   const classifying = useRef(new Set<string>())
+  const mailboxesRef = useRef(mailboxes)
+  mailboxesRef.current = mailboxes
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  const inboxMaxUid = useRef(0)
+
+  const prefs = settings?.prefs ?? DEFAULT_PREFS
+  const prefsRef = useRef(prefs)
+  prefsRef.current = prefs
+  const overrides = settings?.shortcuts ?? {}
+  const hint = useCallback((id: CommandId) => (keysFor(id, overrides)[0] ? formatCombo(keysFor(id, overrides)[0]) : ''), [overrides])
 
   const box = mailboxes.find((b) => b.path === current)
   const source = results ?? messages
@@ -84,9 +126,10 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   )
   const summary = source.find((m) => m.uid === selected) ?? null
 
-  const notify = useCallback((text: string) => {
-    setToast(text)
-    window.setTimeout(() => setToast((t) => (t === text ? '' : t)), 2600)
+  const notify = useCallback((text: string, undo = false) => {
+    const next = { text, undo }
+    setToast(next)
+    window.setTimeout(() => setToast((t) => (t === next ? null : t)), undo ? 6000 : 2600)
   }, [])
 
   const patchMessages = useCallback((uids: number[], patch: (m: MessageSummary) => MessageSummary) => {
@@ -129,6 +172,10 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
       try {
         const page = await api.listMessages(path)
         if (currentRef.current !== path) return
+        // In the foreground there is nothing to announce, so mail seen here moves the notification baseline.
+        if ((!inboxMaxUid.current || document.hasFocus()) && mailboxesRef.current.find((b) => b.path === path)?.specialUse === 'inbox') {
+          inboxMaxUid.current = Math.max(0, ...page.messages.map((m) => m.uid))
+        }
         setMessages((old) => {
           const known = new Map(old.map((m) => [m.uid, m.preview]))
           const fresh = page.messages.map((m) => ({ ...m, preview: m.preview ?? known.get(m.uid) }))
@@ -200,8 +247,20 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   useEffect(() => {
     // The watcher may have connected before this window subscribed.
     void api.getStatus().then(setStatus)
+    // Background notifications: fetch the newest inbox page and announce unread mail newer than the last one seen.
+    const announce = async (mailbox: string) => {
+      const inbox = mailboxesRef.current.find((b) => b.specialUse === 'inbox')
+      if (!prefsRef.current.notifications || document.hasFocus() || !inbox || inbox.path.toUpperCase() !== mailbox.toUpperCase()) return
+      const page = await api.listMessages(inbox.path).catch(() => null)
+      if (!page) return
+      const fresh = page.messages.filter((m) => m.uid > inboxMaxUid.current && !m.seen)
+      inboxMaxUid.current = Math.max(inboxMaxUid.current, ...page.messages.map((m) => m.uid))
+      if (fresh.length > 3) new Notification(`${fresh.length} new messages`, { body: fresh.slice(0, 3).map((m) => displayName(m.from)).join(', '), silent: false })
+      else for (const m of fresh) new Notification(displayName(m.from), { body: m.subject })
+    }
     const off = api.onEvent((event) => {
       if (event.type === 'connection') setStatus(event.status)
+      if (event.type === 'new-mail' && event.mailbox) void announce(event.mailbox)
       if (event.type === 'new-mail' || event.type === 'mailboxes-changed') void refreshMailboxes()
       if (event.type === 'new-mail' && currentRef.current.toUpperCase() === event.mailbox?.toUpperCase()) {
         void refreshList(currentRef.current, false)
@@ -237,7 +296,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
       }
     }, 300)
     return () => window.clearTimeout(timer)
-  }, [query, current, loadPreviews])
+  }, [query, current, loadPreviews, searchRun])
 
   const open = useCallback(
     async (uid: number) => {
@@ -247,11 +306,19 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
       setDetail(null)
       setDetailError('')
       setDetailLoading(true)
+      setDarken(prefsRef.current.darkenEmails)
+      setImagesAllowed(null)
       try {
         const message = await api.getMessage(current, uid)
         if (request !== detailRequest.current) return
         setDetail(message)
-        if (!message.seen) {
+        const { markRead } = prefsRef.current
+        if (!message.seen && markRead !== 'never') {
+          if (markRead === 'delay') {
+            await new Promise((resolve) => window.setTimeout(resolve, 2000))
+            // Only count it as read if it is still the open message.
+            if (selectedRef.current !== uid || request !== detailRequest.current) return
+          }
           patchMessages([uid], (m) => ({ ...m, seen: true }))
           setMailboxes((boxes) => boxes.map((b) => (b.path === current ? { ...b, unread: Math.max(0, b.unread - 1) } : b)))
           await api.setFlags(current, [uid], { seen: true })
@@ -280,16 +347,19 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
       if (selected === null) return
       const uid = selected
       const index = visible.findIndex((m) => m.uid === uid)
-      const neighbour = visible[index + 1] ?? visible[index - 1]
+      const { afterMove } = prefsRef.current
+      const neighbour =
+        afterMove === 'none' ? undefined : afterMove === 'previous' ? (visible[index - 1] ?? visible[index + 1]) : (visible[index + 1] ?? visible[index - 1])
       setMessages((list) => list.filter((m) => m.uid !== uid))
       setResults((r) => r && r.filter((m) => m.uid !== uid))
       setDetail(null)
       if (neighbour) void open(neighbour.uid)
       else setSelected(null)
       try {
-        await api.move(current, [uid], target)
+        const moved = await api.move(current, [uid], target)
+        setLastMove(moved)
         const permanent = target === 'trash' && box?.specialUse === 'trash'
-        notify(permanent ? 'Deleted' : target === 'archive' ? 'Archived' : 'Moved to Trash')
+        notify(permanent ? 'Deleted' : target === 'archive' ? 'Archived' : 'Moved to Trash', Boolean(moved))
       } catch (err) {
         notify(errorMessage(err))
         void refreshList(current, false)
@@ -297,6 +367,26 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
     },
     [selected, visible, current, box, open, notify, refreshList],
   )
+
+  const undo = useCallback(async () => {
+    if (!lastMove) return
+    const move = lastMove
+    setLastMove(null)
+    try {
+      await api.undoMove(move)
+      notify('Moved back')
+      if (currentRef.current === move.to) {
+        // The moved copy is gone from here; drop it rather than wait for the next refresh.
+        setMessages((list) => list.filter((m) => !move.uids.includes(m.uid)))
+        setResults((r) => r && r.filter((m) => !move.uids.includes(m.uid)))
+        if (selectedRef.current !== null && move.uids.includes(selectedRef.current)) setSelected(null)
+      }
+      if (currentRef.current === move.from) void refreshList(move.from, false)
+      setSearchRun((n) => n + 1)
+    } catch (err) {
+      notify(errorMessage(err))
+    }
+  }, [lastMove, notify, refreshList])
 
   const toggle = useCallback(
     async (flag: 'seen' | 'flagged') => {
@@ -320,6 +410,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
     (mode: ReplyMode, ai?: { autoDraft?: boolean; text?: string }) => {
       if (!detail) return
       const draft = buildReply(detail, mode, account.email)
+      draft.text = `${signatureBlock(prefsRef.current.signature)}${draft.text}`
       if (ai?.text) draft.text = `${ai.text.trim()}${draft.text}`
       setComposer({
         draft,
@@ -341,62 +432,100 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
     [source, selected, patchMessages],
   )
 
-  const compose = useCallback(() => setComposer({ draft: EMPTY_DRAFT, title: 'New message' }), [])
+  const compose = useCallback(
+    () => setComposer({ draft: { ...EMPTY_DRAFT, text: signatureBlock(prefsRef.current.signature) }, title: 'New message' }),
+    [],
+  )
 
-  // Single-key shortcuts in the spirit of Mail and Gmail; ignored while typing.
+  const hasMessage = summary !== null
+  const hasDetail = detail !== null && detail.uid === selected
+  const commands: Record<Exclude<CommandId, 'send' | 'snippets'>, { run: () => void; enabled?: boolean }> = {
+    palette: { run: () => setPaletteOpen(true) },
+    compose: { run: compose },
+    reply: { run: () => reply('reply'), enabled: hasDetail },
+    replyAll: { run: () => reply('all'), enabled: hasDetail },
+    forward: { run: () => reply('forward'), enabled: hasDetail },
+    draftReply: { run: () => reply('reply', { autoDraft: true }), enabled: hasDetail },
+    archive: { run: () => void move('archive'), enabled: hasMessage },
+    trash: { run: () => void move('trash'), enabled: hasMessage },
+    undo: { run: () => void undo(), enabled: lastMove !== null },
+    toggleRead: { run: () => void toggle('seen'), enabled: hasMessage },
+    toggleFlag: { run: () => void toggle('flagged'), enabled: hasMessage },
+    next: { run: () => (step(1), listRef.current?.focus()) },
+    previous: { run: () => (step(-1), listRef.current?.focus()) },
+    goInbox: {
+      run: () => {
+        const inbox = mailboxes.find((b) => b.specialUse === 'inbox')
+        if (inbox) (setActiveLabel(null), setCurrent(inbox.path))
+      },
+    },
+    search: { run: () => searchRef.current?.focus() },
+    filterAll: { run: () => setFilter('all') },
+    filterUnread: { run: () => setFilter('unread') },
+    filterFlagged: { run: () => setFilter('flagged') },
+    toggleDarken: { run: () => setDarken((d) => !d), enabled: Boolean(hasDetail && detail?.html) },
+    loadImages: { run: () => setImagesAllowed(selected), enabled: Boolean(hasDetail && detail?.html && !prefs.remoteImages) },
+    assistant: { run: () => setAssistantOpen((open) => !open) },
+    refresh: { run: () => void refreshAll() },
+    settings: { run: () => setSettingsTab('general') },
+    shortcuts: { run: () => setSettingsTab('shortcuts') },
+  }
+  const commandsRef = useRef(commands)
+  commandsRef.current = commands
+  const mainKeys = useMemo(() => keymap(overrides, false), [overrides])
+
+  // One handler for every rebindable shortcut. Plain keys are ignored while typing in a field.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (composer || showSettings) return
-      if (e.metaKey && e.key === 'k') {
-        e.preventDefault()
-        setAssistantOpen((open) => !open)
-        return
-      }
-      if (e.metaKey && e.key === ',') {
-        e.preventDefault()
-        setShowSettings(true)
-        return
-      }
+      if (composer || settingsTab || paletteOpen) return
+      const combo = comboOf(e)
+      const id = combo ? mainKeys.get(combo) : undefined
+      if (!combo || !id || id === 'send' || id === 'snippets') return
       const target = e.target as HTMLElement
-      if (target.matches('input, textarea, select')) return
-      const key = e.key
-      if (e.metaKey) {
-        if (key === 'n') compose()
-        else if (key === 'f') searchRef.current?.focus()
-        else if (key === 'r') reply(e.shiftKey ? 'all' : 'reply')
-        else if (key === 'Backspace') void move('trash')
-        else return
-        e.preventDefault()
-        return
-      }
-      if (e.ctrlKey || e.altKey) return
-      const actions: Record<string, () => void> = {
-        j: () => step(1),
-        ArrowDown: () => step(1),
-        k: () => step(-1),
-        ArrowUp: () => step(-1),
-        e: () => void move('archive'),
-        '#': () => void move('trash'),
-        Backspace: () => void move('trash'),
-        Delete: () => void move('trash'),
-        u: () => void toggle('seen'),
-        s: () => void toggle('flagged'),
-        r: () => reply('reply'),
-        a: () => reply('all'),
-        f: () => reply('forward'),
-        d: () => reply('reply', { autoDraft: true }),
-        c: compose,
-        '/': () => searchRef.current?.focus(),
-      }
-      const action = actions[key]
-      if (!action) return
+      if (target.matches('input, textarea, select') && (isPlainKey(combo) || !COMMANDS.find((c) => c.id === id)?.global)) return
+      const command = commandsRef.current[id]
       e.preventDefault()
-      action()
-      if (key.startsWith('Arrow') || key === 'j' || key === 'k') listRef.current?.focus()
+      if (command.enabled !== false) command.run()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [composer, showSettings, compose, reply, step, move, toggle])
+  }, [composer, settingsTab, paletteOpen, mainKeys])
+
+  const paletteItems = (): PaletteItem[] => [
+    ...COMMANDS.filter((c) => !c.composer && c.id !== 'palette').map((c) => {
+      const command = commands[c.id as keyof typeof commands]
+      return { id: c.id, title: c.title, group: c.group, hint: hint(c.id), disabled: command.enabled === false, run: command.run }
+    }),
+    ...mailboxes.map((b) => ({
+      id: `box:${b.path}`,
+      title: `Go to ${b.name}`,
+      group: 'Mailboxes',
+      run: () => (setActiveLabel(null), setCurrent(b.path)),
+    })),
+    ...labelList.map((l) => ({
+      id: `label:${l.id}`,
+      title: `Show ${l.name}`,
+      group: 'Labels',
+      run: () => {
+        setActiveLabel(l.id)
+        const inbox = mailboxes.find((b) => b.specialUse === 'inbox')
+        if (inbox && current !== inbox.path) setCurrent(inbox.path)
+      },
+    })),
+    ...(selected !== null
+      ? labelList.map((l) => ({ id: `set-label:${l.id}`, title: `Label as ${l.name}`, group: 'Labels', run: () => setLabel(l.id) }))
+      : []),
+  ]
+
+  // Appearance preferences apply to the whole window.
+  useEffect(() => {
+    const root = document.documentElement.style
+    root.setProperty('--accent', prefs.accent)
+    root.setProperty('--accent-soft', `color-mix(in srgb, ${prefs.accent} 16%, transparent)`)
+    // Light accents (Graphite) need dark text on filled buttons.
+    root.setProperty('--on-accent', prefs.accent === '#e5e5ea' ? '#000' : '#fff')
+    api.setZoom(prefs.zoom)
+  }, [prefs.accent, prefs.zoom])
 
   async function refreshAll() {
     setRefreshing(true)
@@ -405,7 +534,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   }
 
   return (
-    <div className={`app ${assistantOpen ? 'with-assistant' : ''}`}>
+    <div className={`app density-${prefs.density} ${assistantOpen ? 'with-assistant' : ''}`}>
       <Sidebar
         account={account}
         mailboxes={mailboxes}
@@ -420,7 +549,8 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
           const inbox = mailboxes.find((b) => b.specialUse === 'inbox')
           if (id && inbox && current !== inbox.path) setCurrent(inbox.path)
         }}
-        onSettings={() => setShowSettings(true)}
+        onSettings={() => setSettingsTab('general')}
+        composeHint={hint('compose')}
         onSelect={(path) => {
           setActiveLabel(null)
           setCurrent(path)
@@ -460,6 +590,11 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         onAssistant={() => setAssistantOpen((open) => !open)}
         onDraftReply={() => reply('reply', { autoDraft: true })}
         onLabel={setLabel}
+        hint={hint}
+        darken={darken}
+        onToggleDarken={() => setDarken((d) => !d)}
+        blockImages={!prefs.remoteImages && imagesAllowed !== selected}
+        onLoadImages={() => setImagesAllowed(selected)}
         onReply={reply}
         onArchive={() => void move('archive')}
         onTrash={() => void move('trash')}
@@ -470,6 +605,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         <Assistant
           message={detail?.uid === selected ? detail : null}
           onClose={() => setAssistantOpen(false)}
+          closeHint={hint('assistant')}
           onUseAsReply={(text) => reply('reply', { text })}
         />
       )}
@@ -480,6 +616,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
           context={composer.context}
           autoDraft={composer.autoDraft}
           snippets={settings?.snippets ?? []}
+          shortcuts={overrides}
           onClose={() => setComposer(null)}
           onSent={() => {
             setComposer(null)
@@ -488,13 +625,15 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
           }}
         />
       )}
-      {showSettings && settings && (
+      {paletteOpen && <Palette items={paletteItems()} onClose={() => setPaletteOpen(false)} />}
+      {settingsTab && settings && (
         <Settings
           settings={settings}
-          onClose={() => setShowSettings(false)}
+          initialTab={settingsTab}
+          onClose={() => setSettingsTab(null)}
           onSaved={(next) => {
             setSettings(next)
-            setShowSettings(false)
+            setSettingsTab(null)
             // Labels may have changed; let the inbox be labeled again against the new set.
             classifying.current.clear()
             setMessages((list) => list.map((m) => ({ ...m, label: undefined })))
@@ -502,7 +641,16 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
           }}
         />
       )}
-      {toast && <div className="toast">{toast}</div>}
+      {toast && (
+        <div className="toast">
+          {toast.text}
+          {toast.undo && lastMove && (
+            <button onClick={() => void undo()}>
+              Undo <kbd>{hint('undo')}</kbd>
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -551,6 +699,11 @@ function buildReply(m: MessageDetail, mode: ReplyMode, self: string): Draft {
     inReplyTo: m.messageId,
     references,
   }
+}
+
+/** Leading blank lines leave room to type above the signature. */
+function signatureBlock(signature: string): string {
+  return signature.trim() ? `\n\n${signature.trim()}` : ''
 }
 
 function prefix(tag: 'Re' | 'Fwd', subject: string): string {

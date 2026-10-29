@@ -101,10 +101,29 @@ export interface Snippet {
   body: string
 }
 
+export interface Prefs {
+  /** When opening a message marks it read. */
+  markRead: 'immediately' | 'delay' | 'never'
+  /** What gets selected after archiving or deleting. */
+  afterMove: 'next' | 'previous' | 'none'
+  remoteImages: boolean
+  notifications: boolean
+  signature: string
+  accent: string
+  density: 'comfortable' | 'compact' | 'minimal'
+  zoom: number
+  darkenEmails: boolean
+}
+
+/** Command id to key combos, only for commands the user rebound. */
+export type ShortcutOverrides = Record<string, string[]>
+
 export interface Settings {
   ai: { provider: AiProvider; model: string; codexPath: string; openaiKey: string }
   labels: { engine: LabelEngine; typesafeKey: string; list: LabelDef[] }
   snippets: Snippet[]
+  prefs: Prefs
+  shortcuts: ShortcutOverrides
 }
 
 /** Settings as the renderer sees them: secrets replaced by whether they are set. */
@@ -112,6 +131,8 @@ export interface PublicSettings {
   ai: { provider: AiProvider; model: string; codexPath: string; hasOpenaiKey: boolean }
   labels: { engine: LabelEngine; hasTypesafeKey: boolean; list: LabelDef[] }
   snippets: Snippet[]
+  prefs: Prefs
+  shortcuts: ShortcutOverrides
 }
 
 /** Partial update; a secret is only changed when a non-empty value is sent, and cleared with null. */
@@ -119,6 +140,15 @@ export interface SettingsPatch {
   ai?: Partial<{ provider: AiProvider; model: string; codexPath: string; openaiKey: string | null }>
   labels?: Partial<{ engine: LabelEngine; typesafeKey: string | null; list: LabelDef[] }>
   snippets?: Snippet[]
+  prefs?: Partial<Prefs>
+  shortcuts?: ShortcutOverrides
+}
+
+/** Where a move put the messages, so it can be undone. Null when the server cannot report new UIDs. */
+export interface MoveResult {
+  from: string
+  to: string
+  uids: number[]
 }
 
 export interface MessageContext {
@@ -169,7 +199,9 @@ export interface LiameApi {
   search(mailbox: string, query: string): Promise<MessageSummary[]>
   getMessage(mailbox: string, uid: number): Promise<MessageDetail>
   setFlags(mailbox: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }): Promise<void>
-  move(mailbox: string, uids: number[], target: SpecialUse): Promise<void>
+  move(mailbox: string, uids: number[], target: SpecialUse): Promise<MoveResult | null>
+  undoMove(move: MoveResult): Promise<void>
+  setZoom(factor: number): void
   saveAttachment(mailbox: string, uid: number, partId: number): Promise<void>
   pickAttachments(): Promise<string[]>
   send(draft: Draft): Promise<void>
