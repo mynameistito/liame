@@ -322,7 +322,13 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
             {draft.kept?.map((k) => (
               <span className="chip" key={`kept-${k.partId}`}>
                 {k.filename}
-                <button className="icon-button" style={{ width: 18, height: 18 }} onClick={() => set({ kept: draft.kept?.filter((x) => x.partId !== k.partId) })}>
+                <button
+                  className="icon-button"
+                  style={{ width: 18, height: 18 }}
+                  // Attachment ids are rewritten when a save lands, so hold changes until it does.
+                  disabled={savingDraft}
+                  onClick={() => set({ kept: draft.kept?.filter((x) => x.partId !== k.partId) })}
+                >
                   <X size={11} />
                 </button>
               </span>
@@ -330,7 +336,7 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
             {draft.attachments.map((path) => (
               <span className="chip" key={path}>
                 {path.split('/').pop()}
-                <button className="icon-button" style={{ width: 18, height: 18 }} onClick={() => set({ attachments: draft.attachments.filter((p) => p !== path) })}>
+                <button className="icon-button" style={{ width: 18, height: 18 }} disabled={savingDraft} onClick={() => set({ attachments: draft.attachments.filter((p) => p !== path) })}>
                   <X size={11} />
                 </button>
               </span>
@@ -355,7 +361,7 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
         )}
 
         <div className="composer-foot">
-          <button className="icon-button" title="Attach files" onClick={attach}>
+          <button className="icon-button" title="Attach files" onClick={attach} disabled={savingDraft}>
             <Paperclip size={15} />
           </button>
           {hasSelection && !writing ? (

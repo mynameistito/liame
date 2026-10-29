@@ -98,8 +98,8 @@ export function Assistant({ message, onClose, closeHint, onUseAsReply }: Props) 
           rows={1}
           placeholder={message ? 'Ask about this email' : 'Ask anything'}
           onChange={(e) => setInput(e.target.value)}
+          // No stopPropagation: the window's shortcut handler already ignores plain keys in fields, and ⌘ shortcuts must still work here.
           onKeyDown={(e) => {
-            e.stopPropagation()
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
               void ask(input)

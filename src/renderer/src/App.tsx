@@ -605,9 +605,9 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
       run: () => {
         if (fitted.listShown) return searchRef.current?.focus()
         focusSearch.current = true
-        // Bring the list back: unhide it, or close the assistant that squeezed it out.
         if (layout.listHidden) toggleList()
-        else setAssistantOpen(false)
+        // Close the assistant when the list would still not fit next to it, even at minimum widths.
+        if (assistantOpen && windowWidth < (layout.sidebarHidden ? 0 : 180) + 280 + 280 + 360) setAssistantOpen(false)
       },
     },
     filterAll: { run: () => setFilter('all') },
