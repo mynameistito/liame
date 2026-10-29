@@ -1,0 +1,45 @@
+import { contextBridge, ipcRenderer } from 'electron'
+import type { AiEvent, LiameApi, MailEvent } from '../shared/types'
+
+const call =
+  (channel: string) =>
+  (...args: unknown[]) =>
+    ipcRenderer.invoke(`liame:${channel}`, ...args)
+
+const api: LiameApi = {
+  getAccount: call('getAccount'),
+  getStatus: call('getStatus'),
+  saveAccount: call('saveAccount'),
+  testAccount: call('testAccount'),
+  signOut: call('signOut'),
+  listMailboxes: call('listMailboxes'),
+  listMessages: call('listMessages'),
+  previews: call('previews'),
+  search: call('search'),
+  getMessage: call('getMessage'),
+  setFlags: call('setFlags'),
+  move: call('move'),
+  saveAttachment: call('saveAttachment'),
+  pickAttachments: call('pickAttachments'),
+  send: call('send'),
+  openExternal: call('openExternal'),
+  getSettings: call('getSettings'),
+  saveSettings: call('saveSettings'),
+  aiModels: call('aiModels'),
+  aiStart: call('aiStart'),
+  aiCancel: call('aiCancel'),
+  classify: call('classify'),
+  setLabel: call('setLabel'),
+  onAi(listener) {
+    const handler = (_: unknown, event: AiEvent) => listener(event)
+    ipcRenderer.on('liame:ai', handler)
+    return () => ipcRenderer.removeListener('liame:ai', handler)
+  },
+  onEvent(listener) {
+    const handler = (_: unknown, event: MailEvent) => listener(event)
+    ipcRenderer.on('liame:event', handler)
+    return () => ipcRenderer.removeListener('liame:event', handler)
+  },
+}
+
+contextBridge.exposeInMainWorld('liame', api)
