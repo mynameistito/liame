@@ -59,7 +59,9 @@ export interface Attachment {
 
 export interface MessageDetail extends MessageSummary {
   cc: Address[]
+  bcc: Address[]
   replyTo: Address[]
+  inReplyTo?: string
   references: string[]
   html?: string
   text?: string
@@ -76,6 +78,21 @@ export interface Draft {
   attachments: string[]
   inReplyTo?: string
   references?: string[]
+  /** UID of the saved copy in Drafts this draft replaces when saved again or sent. */
+  draftUid?: number
+}
+
+export type MoveTarget = SpecialUse | { path: string }
+
+/** A native context-menu entry. `id` comes back when the item is chosen. */
+export interface MenuItemSpec {
+  id?: string
+  label?: string
+  separator?: boolean
+  enabled?: boolean
+  checked?: boolean
+  accelerator?: string
+  submenu?: MenuItemSpec[]
 }
 
 export interface MailEvent {
@@ -199,7 +216,11 @@ export interface LiameApi {
   search(mailbox: string, query: string): Promise<MessageSummary[]>
   getMessage(mailbox: string, uid: number): Promise<MessageDetail>
   setFlags(mailbox: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }): Promise<void>
-  move(mailbox: string, uids: number[], target: SpecialUse): Promise<MoveResult | null>
+  move(mailbox: string, uids: number[], target: MoveTarget): Promise<MoveResult | null>
+  markAllRead(mailbox: string): Promise<void>
+  saveDraft(draft: Draft): Promise<number | null>
+  contextMenu(items: MenuItemSpec[]): Promise<string | null>
+  focusWindow(): void
   undoMove(move: MoveResult): Promise<void>
   setZoom(factor: number): void
   saveAttachment(mailbox: string, uid: number, partId: number): Promise<void>

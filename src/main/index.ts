@@ -1,12 +1,13 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, screen, shell } from 'electron'
+import { existsSync, readFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { AccountConfig, AiTask, ClassifyItem, Draft, MailEvent, MoveResult, SettingsPatch, SpecialUse } from '../shared/types'
+import type { AccountConfig, AiTask, ClassifyItem, Draft, MailEvent, MenuItemSpec, MoveResult, MoveTarget, SettingsPatch } from '../shared/types'
 import { clearAccount, loadAccount, storeAccount, toPublic } from './account'
 import { cancelTask, closeAi, listModels, startTask } from './ai'
 import { classify, setLabel } from './labels'
 import { MailService } from './mail'
-import { sendDraft } from './send'
+import { buildRaw, sendDraft } from './send'
 import { loadSettings, toPublicSettings, updateSettings } from './settings'
 
 let window: BrowserWindow | null = null
@@ -35,10 +36,27 @@ function isSafeExternal(url: string): boolean {
   return /^(https?|mailto):/i.test(url)
 }
 
+const boundsFile = () => join(app.getPath('userData'), 'window.json')
+
+function savedBounds(): Electron.Rectangle | undefined {
+  try {
+    if (!existsSync(boundsFile())) return undefined
+    const bounds = JSON.parse(readFileSync(boundsFile(), 'utf8')) as Electron.Rectangle
+    // Ignore positions on a display that is no longer attached.
+    const visible = screen.getAllDisplays().some((d) => bounds.x >= d.bounds.x - 50 && bounds.x < d.bounds.x + d.bounds.width && bounds.y >= d.bounds.y - 50 && bounds.y < d.bounds.y + d.bounds.height)
+    return visible ? bounds : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function createWindow(): void {
+  const bounds = savedBounds()
   window = new BrowserWindow({
-    width: 1320,
-    height: 840,
+    width: bounds?.width ?? 1320,
+    height: bounds?.height ?? 840,
+    x: bounds?.x,
+    y: bounds?.y,
     minWidth: 880,
     minHeight: 540,
     show: false,
@@ -55,6 +73,9 @@ function createWindow(): void {
   })
 
   window.once('ready-to-show', () => window?.show())
+  window.on('close', () => {
+    if (window && !window.isFullScreen()) void writeFile(boundsFile(), JSON.stringify(window.getNormalBounds()))
+  })
   window.on('closed', () => (window = null))
 
   // Links clicked inside email bodies open in the default browser, never in the app.
@@ -126,7 +147,19 @@ function registerIpc(): void {
   handle('setFlags', (path: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }) =>
     service().setFlags(path, uids, flags),
   )
-  handle('move', (path: string, uids: number[], target: SpecialUse) => service().move(path, uids, target))
+  handle('move', (path: string, uids: number[], target: MoveTarget) => service().move(path, uids, target))
+  handle('markAllRead', (path: string) => service().markAllRead(path))
+  handle('saveDraft', async (draft: Draft) => {
+    if (!account) throw new Error('No account is configured.')
+    return service().saveDraft(await buildRaw(account, draft), draft.draftUid)
+  })
+  handle('contextMenu', (items: MenuItemSpec[]) => popupMenu(items))
+  ipcMain.on('liame:focus', () => {
+    if (!window) return
+    if (window.isMinimized()) window.restore()
+    window.show()
+    app.focus({ steal: true })
+  })
   handle('undoMove', (move: MoveResult) => service().undoMove(move))
   handle('saveAttachment', async (path: string, uid: number, partId: number) => {
     const file = await service().attachment(path, uid, partId)
@@ -140,6 +173,8 @@ function registerIpc(): void {
   handle('send', async (draft: Draft) => {
     if (!account) throw new Error('No account is configured.')
     await sendDraft(account, draft)
+    // A sent draft should not linger in Drafts.
+    if (draft.draftUid) await service().deleteDraft(draft.draftUid).catch(() => {})
   })
   handle('openExternal', async (url: string) => {
     if (isSafeExternal(url)) await shell.openExternal(url)
@@ -156,6 +191,30 @@ function registerIpc(): void {
   handle('aiCancel', (id: string) => cancelTask(id))
   handle('classify', async (items: ClassifyItem[]) => classify(items, await loadSettings()))
   handle('setLabel', (item: ClassifyItem, label: string | null) => setLabel(item, label))
+}
+
+/** Shows a native menu and resolves with the chosen item's id, or null when dismissed. */
+function popupMenu(items: MenuItemSpec[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    const build = (list: MenuItemSpec[]): Electron.MenuItemConstructorOptions[] =>
+      list.map((item) =>
+        item.separator
+          ? { type: 'separator' }
+          : {
+              label: item.label,
+              enabled: item.enabled !== false,
+              type: item.checked === undefined ? 'normal' : 'checkbox',
+              checked: item.checked,
+              // Shown as a hint only; the renderer owns the actual key handling.
+              accelerator: item.accelerator,
+              registerAccelerator: false,
+              submenu: item.submenu ? build(item.submenu) : undefined,
+              click: item.id ? () => resolve(item.id!) : undefined,
+            },
+      )
+    // Clicks can land after the close callback, so give them a moment before resolving null.
+    Menu.buildFromTemplate(build(items)).popup({ window: window ?? undefined, callback: () => setTimeout(() => resolve(null), 100) })
+  })
 }
 
 function describe(error: unknown): string {

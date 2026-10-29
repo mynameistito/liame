@@ -6,13 +6,14 @@ import type {
   MessageContext,
   MessageDetail,
   MessageSummary,
+  MenuItemSpec,
   MoveResult,
+  MoveTarget,
   Prefs,
   PublicAccount,
   PublicSettings,
-  SpecialUse,
 } from '../../shared/types'
-import { COMMANDS, type CommandId, comboOf, formatCombo, isPlainKey, keymap, keysFor } from './commands'
+import { COMMANDS, type CommandId, comboOf, formatCombo, isPlainKey, keymap, keysFor, toAccelerator } from './commands'
 import { Assistant } from './components/Assistant'
 import { Composer } from './components/Composer'
 import { MessageList, type Filter } from './components/MessageList'
@@ -21,7 +22,7 @@ import { Reader, type ReplyMode } from './components/Reader'
 import { Settings, type SettingsTab } from './components/Settings'
 import { Setup } from './components/Setup'
 import { Sidebar } from './components/Sidebar'
-import { api, classifyItem, displayName, errorMessage, formatAddress, longDate, toContext } from './lib'
+import { api, classifyItem, type Contact, displayName, errorMessage, formatAddress, loadContacts, longDate, rememberContacts, toContext, usePersistent } from './lib'
 
 const EMPTY_DRAFT: Draft = { to: '', cc: '', bcc: '', subject: '', text: '', attachments: [] }
 
@@ -84,6 +85,12 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   const [lastMove, setLastMove] = useState<MoveResult | null>(null)
   const [darken, setDarken] = useState(true)
   const [imagesAllowed, setImagesAllowed] = useState<number | null>(null)
+  /** Messages picked for a bulk action (⌘-click, ⇧-click, x). Empty means actions apply to the open message. */
+  const [checked, setChecked] = useState<number[]>([])
+  const [paletteQuery, setPaletteQuery] = useState('')
+  const [contacts, setContacts] = useState<Record<string, Contact>>(loadContacts)
+  const [sections, setSections] = usePersistent<string[]>('sections', [])
+  const [layout, setLayout] = usePersistent('layout', { sidebar: 228, list: 372, assistant: 340, sidebarHidden: false, listHidden: false })
 
   const listRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
@@ -97,6 +104,9 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   const selectedRef = useRef(selected)
   selectedRef.current = selected
   const inboxMaxUid = useRef(0)
+  /** A message to open once its mailbox has loaded (from a notification click). */
+  const pendingOpen = useRef<{ path: string; uid: number } | null>(null)
+  const openRef = useRef<(uid: number) => void>(() => {})
 
   const prefs = settings?.prefs ?? DEFAULT_PREFS
   const prefsRef = useRef(prefs)
@@ -180,17 +190,23 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
           const known = new Map(old.map((m) => [m.uid, m.preview]))
           const fresh = page.messages.map((m) => ({ ...m, preview: m.preview ?? known.get(m.uid) }))
           const oldest = fresh.at(-1)?.uid ?? 0
-          return reset ? fresh : [...fresh, ...old.filter((m) => m.uid < oldest)]
+          // Keep older rows only when this page does not reach the start of the mailbox; otherwise it is the whole list.
+          return reset || page.nextBefore === 0 ? fresh : [...fresh, ...old.filter((m) => m.uid < oldest)]
         })
         if (reset) setNextBefore(page.nextBefore)
         void loadPreviews(path, page.messages)
+        setContacts(rememberContacts(page.messages.flatMap((m) => [m.from, ...m.to]), account.email))
+        if (pendingOpen.current?.path === path) {
+          openRef.current(pendingOpen.current.uid)
+          pendingOpen.current = null
+        }
       } catch (err) {
         setListError(errorMessage(err))
       } finally {
         setLoading(false)
       }
     },
-    [loadPreviews],
+    [loadPreviews, account.email],
   )
 
   const loadMore = useCallback(async () => {
@@ -237,6 +253,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
 
   useEffect(() => {
     setSelected(null)
+    setChecked([])
     setDetail(null)
     setQuery('')
     setResults(null)
@@ -255,8 +272,21 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
       if (!page) return
       const fresh = page.messages.filter((m) => m.uid > inboxMaxUid.current && !m.seen)
       inboxMaxUid.current = Math.max(inboxMaxUid.current, ...page.messages.map((m) => m.uid))
-      if (fresh.length > 3) new Notification(`${fresh.length} new messages`, { body: fresh.slice(0, 3).map((m) => displayName(m.from)).join(', '), silent: false })
-      else for (const m of fresh) new Notification(displayName(m.from), { body: m.subject })
+      const show = (title: string, body: string, uid?: number) => {
+        const n = new Notification(title, { body })
+        n.onclick = () => {
+          api.focusWindow()
+          setActiveLabel(null)
+          if (uid === undefined) return setCurrent(inbox.path)
+          if (currentRef.current === inbox.path) openRef.current(uid)
+          else {
+            pendingOpen.current = { path: inbox.path, uid }
+            setCurrent(inbox.path)
+          }
+        }
+      }
+      if (fresh.length > 3) show(`${fresh.length} new messages`, fresh.slice(0, 3).map((m) => displayName(m.from)).join(', '))
+      else for (const m of fresh) show(displayName(m.from), m.subject, m.uid)
     }
     const off = api.onEvent((event) => {
       if (event.type === 'connection') setStatus(event.status)
@@ -331,6 +361,32 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
     },
     [current, detail, patchMessages],
   )
+  openRef.current = (uid) => void open(uid)
+
+  /** What actions apply to: the picked messages, or else the open one. */
+  const targets = useMemo(() => (checked.length ? checked : selected !== null ? [selected] : []), [checked, selected])
+
+  /** Click handling for rows: plain opens, ⌘ toggles a pick, ⇧ picks a range from the open message. */
+  const pick = useCallback(
+    (uid: number, mods: { meta: boolean; shift: boolean }) => {
+      if (mods.shift && selected !== null) {
+        const a = visible.findIndex((m) => m.uid === selected)
+        const b = visible.findIndex((m) => m.uid === uid)
+        if (a !== -1 && b !== -1) setChecked(visible.slice(Math.min(a, b), Math.max(a, b) + 1).map((m) => m.uid))
+        return
+      }
+      if (mods.meta) {
+        setChecked((list) => {
+          const base = list.length === 0 && selected !== null && selected !== uid ? [selected] : list
+          return base.includes(uid) ? base.filter((x) => x !== uid) : [...base, uid]
+        })
+        return
+      }
+      setChecked([])
+      void open(uid)
+    },
+    [selected, visible, open],
+  )
 
   const step = useCallback(
     (delta: number) => {
@@ -343,29 +399,46 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   )
 
   const move = useCallback(
-    async (target: SpecialUse) => {
-      if (selected === null) return
-      const uid = selected
-      const index = visible.findIndex((m) => m.uid === uid)
+    async (target: MoveTarget, uids: number[] = targets) => {
+      if (uids.length === 0) return
+      const gone = new Set(uids)
       const { afterMove } = prefsRef.current
-      const neighbour =
-        afterMove === 'none' ? undefined : afterMove === 'previous' ? (visible[index - 1] ?? visible[index + 1]) : (visible[index + 1] ?? visible[index - 1])
-      setMessages((list) => list.filter((m) => m.uid !== uid))
-      setResults((r) => r && r.filter((m) => m.uid !== uid))
-      setDetail(null)
-      if (neighbour) void open(neighbour.uid)
-      else setSelected(null)
+      // The neighbour is found among what stays, next to the open message (or the first picked one).
+      const anchor = visible.findIndex((m) => m.uid === (selected !== null && gone.has(selected) ? selected : uids[0]))
+      const after = visible.slice(anchor + 1).find((m) => !gone.has(m.uid))
+      const before = visible.slice(0, Math.max(0, anchor)).reverse().find((m) => !gone.has(m.uid))
+      const neighbour = afterMove === 'none' ? undefined : afterMove === 'previous' ? (before ?? after) : (after ?? before)
+      const openGone = selected === null || gone.has(selected)
+      setMessages((list) => list.filter((m) => !gone.has(m.uid)))
+      setResults((r) => r && r.filter((m) => !gone.has(m.uid)))
+      setChecked([])
+      if (openGone) {
+        setDetail(null)
+        if (neighbour) void open(neighbour.uid)
+        else setSelected(null)
+      }
       try {
-        const moved = await api.move(current, [uid], target)
+        const moved = await api.move(current, uids, target)
         setLastMove(moved)
         const permanent = target === 'trash' && box?.specialUse === 'trash'
-        notify(permanent ? 'Deleted' : target === 'archive' ? 'Archived' : 'Moved to Trash', Boolean(moved))
+        const where = typeof target === 'string' ? target : (mailboxes.find((b) => b.path === target.path)?.name ?? target.path)
+        const verb = permanent
+          ? 'deleted'
+          : target === 'archive'
+            ? 'archived'
+            : target === 'trash'
+              ? 'moved to Trash'
+              : target === 'junk'
+                ? 'marked as junk'
+                : `moved to ${where}`
+        const text = uids.length > 1 ? `${uids.length} messages ${verb}` : verb.charAt(0).toUpperCase() + verb.slice(1)
+        notify(text, Boolean(moved))
       } catch (err) {
         notify(errorMessage(err))
         void refreshList(current, false)
       }
     },
-    [selected, visible, current, box, open, notify, refreshList],
+    [targets, selected, visible, current, box, mailboxes, open, notify, refreshList],
   )
 
   const undo = useCallback(async () => {
@@ -388,23 +461,42 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
     }
   }, [lastMove, notify, refreshList])
 
+  /** Set a flag on the targets; with no value given, flips it (set unless all already have it). */
   const toggle = useCallback(
-    async (flag: 'seen' | 'flagged') => {
-      const m = source.find((x) => x.uid === selected)
-      if (!m) return
-      const value = !m[flag]
-      patchMessages([m.uid], (x) => ({ ...x, [flag]: value }))
+    async (flag: 'seen' | 'flagged', force?: boolean, uids: number[] = targets) => {
+      const list = source.filter((x) => uids.includes(x.uid))
+      if (list.length === 0) return
+      const value = force ?? !list.every((m) => m[flag])
+      const changed = list.filter((m) => m[flag] !== value).map((m) => m.uid)
+      if (changed.length === 0) return
+      patchMessages(changed, (x) => ({ ...x, [flag]: value }))
       if (flag === 'seen') {
-        setMailboxes((boxes) => boxes.map((b) => (b.path === current ? { ...b, unread: Math.max(0, b.unread + (value ? -1 : 1)) } : b)))
+        setMailboxes((boxes) => boxes.map((b) => (b.path === current ? { ...b, unread: Math.max(0, b.unread + (value ? -1 : 1) * changed.length) } : b)))
       }
       try {
-        await api.setFlags(current, [m.uid], { [flag]: value })
+        await api.setFlags(current, changed, { [flag]: value })
       } catch (err) {
         notify(errorMessage(err))
       }
     },
-    [source, selected, current, patchMessages, notify],
+    [source, targets, current, patchMessages, notify],
   )
+
+  const markAllRead = useCallback(async () => {
+    const path = current
+    patchMessages(
+      messages.filter((m) => !m.seen).map((m) => m.uid),
+      (m) => ({ ...m, seen: true }),
+    )
+    setMailboxes((boxes) => boxes.map((b) => (b.path === path ? { ...b, unread: 0 } : b)))
+    try {
+      await api.markAllRead(path)
+      notify('Marked all as read')
+    } catch (err) {
+      notify(errorMessage(err))
+      void refreshList(path, false)
+    }
+  }, [current, messages, patchMessages, notify, refreshList])
 
   const reply = useCallback(
     (mode: ReplyMode, ai?: { autoDraft?: boolean; text?: string }) => {
@@ -423,34 +515,71 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   )
 
   const setLabel = useCallback(
-    (label: string | null) => {
-      const m = source.find((x) => x.uid === selected)
-      if (!m) return
-      patchMessages([m.uid], (x) => ({ ...x, label }))
-      void api.setLabel(classifyItem(m), label)
+    (label: string | null, uids: number[] = targets) => {
+      const list = source.filter((x) => uids.includes(x.uid))
+      if (list.length === 0) return
+      patchMessages(
+        list.map((m) => m.uid),
+        (x) => ({ ...x, label }),
+      )
+      for (const m of list) void api.setLabel(classifyItem(m), label)
     },
-    [source, selected, patchMessages],
+    [source, targets, patchMessages],
   )
+
+  const editDraft = useCallback(() => {
+    if (!detail) return
+    setComposer({
+      title: 'Draft',
+      draft: {
+        to: detail.to.map(formatAddress).join(', '),
+        cc: detail.cc.map(formatAddress).join(', '),
+        bcc: detail.bcc.map(formatAddress).join(', '),
+        subject: detail.subject === '(no subject)' ? '' : detail.subject,
+        text: detail.text ?? '',
+        attachments: [],
+        inReplyTo: detail.inReplyTo,
+        references: detail.references,
+        draftUid: detail.uid,
+      },
+    })
+  }, [detail])
 
   const compose = useCallback(
     () => setComposer({ draft: { ...EMPTY_DRAFT, text: signatureBlock(prefsRef.current.signature) }, title: 'New message' }),
     [],
   )
 
-  const hasMessage = summary !== null
+  const hasTargets = targets.length > 0
   const hasDetail = detail !== null && detail.uid === selected
-  const commands: Record<Exclude<CommandId, 'send' | 'snippets'>, { run: () => void; enabled?: boolean }> = {
-    palette: { run: () => setPaletteOpen(true) },
+  const single = checked.length <= 1
+  const inDrafts = box?.specialUse === 'drafts'
+  const toggleSidebar = () => setLayout((l) => ({ ...l, sidebarHidden: !l.sidebarHidden }))
+  const toggleList = () => setLayout((l) => ({ ...l, listHidden: !l.listHidden }))
+  const openPalette = (query = '') => (setPaletteQuery(query), setPaletteOpen(true))
+  const commands: Record<Exclude<CommandId, 'send' | 'snippets' | 'saveDraft'>, { run: () => void; enabled?: boolean }> = {
+    palette: { run: () => openPalette() },
     compose: { run: compose },
-    reply: { run: () => reply('reply'), enabled: hasDetail },
-    replyAll: { run: () => reply('all'), enabled: hasDetail },
-    forward: { run: () => reply('forward'), enabled: hasDetail },
-    draftReply: { run: () => reply('reply', { autoDraft: true }), enabled: hasDetail },
-    archive: { run: () => void move('archive'), enabled: hasMessage },
-    trash: { run: () => void move('trash'), enabled: hasMessage },
+    reply: { run: () => reply('reply'), enabled: hasDetail && single },
+    replyAll: { run: () => reply('all'), enabled: hasDetail && single },
+    forward: { run: () => reply('forward'), enabled: hasDetail && single },
+    draftReply: { run: () => reply('reply', { autoDraft: true }), enabled: hasDetail && single },
+    editDraft: { run: editDraft, enabled: hasDetail && single && inDrafts },
+    archive: { run: () => void move('archive'), enabled: hasTargets },
+    trash: { run: () => void move('trash'), enabled: hasTargets },
+    junk: { run: () => void move('junk'), enabled: hasTargets && box?.specialUse !== 'junk' },
+    moveTo: { run: () => openPalette('Move to '), enabled: hasTargets },
+    labelAs: { run: () => openPalette('Label as '), enabled: hasTargets && labelList.length > 0 },
     undo: { run: () => void undo(), enabled: lastMove !== null },
-    toggleRead: { run: () => void toggle('seen'), enabled: hasMessage },
-    toggleFlag: { run: () => void toggle('flagged'), enabled: hasMessage },
+    toggleRead: { run: () => void toggle('seen'), enabled: hasTargets },
+    toggleFlag: { run: () => void toggle('flagged'), enabled: hasTargets },
+    toggleSelect: {
+      run: () => selected !== null && setChecked((list) => (list.includes(selected) ? list.filter((x) => x !== selected) : [...list, selected])),
+      enabled: selected !== null,
+    },
+    selectAll: { run: () => setChecked(visible.map((m) => m.uid)), enabled: visible.length > 0 },
+    clearSelection: { run: () => setChecked([]), enabled: checked.length > 0 },
+    markAllRead: { run: () => void markAllRead(), enabled: (box?.unread ?? 0) > 0 || messages.some((m) => !m.seen) },
     next: { run: () => (step(1), listRef.current?.focus()) },
     previous: { run: () => (step(-1), listRef.current?.focus()) },
     goInbox: {
@@ -459,12 +588,14 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         if (inbox) (setActiveLabel(null), setCurrent(inbox.path))
       },
     },
-    search: { run: () => searchRef.current?.focus() },
+    search: { run: () => (layout.listHidden && toggleList(), searchRef.current?.focus()) },
     filterAll: { run: () => setFilter('all') },
     filterUnread: { run: () => setFilter('unread') },
     filterFlagged: { run: () => setFilter('flagged') },
     toggleDarken: { run: () => setDarken((d) => !d), enabled: Boolean(hasDetail && detail?.html) },
     loadImages: { run: () => setImagesAllowed(selected), enabled: Boolean(hasDetail && detail?.html && !prefs.remoteImages) },
+    toggleSidebar: { run: toggleSidebar },
+    toggleList: { run: toggleList },
     assistant: { run: () => setAssistantOpen((open) => !open) },
     refresh: { run: () => void refreshAll() },
     settings: { run: () => setSettingsTab('general') },
@@ -480,17 +611,20 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
       if (composer || settingsTab || paletteOpen) return
       const combo = comboOf(e)
       const id = combo ? mainKeys.get(combo) : undefined
-      if (!combo || !id || id === 'send' || id === 'snippets') return
+      if (!combo || !id || id === 'send' || id === 'snippets' || id === 'saveDraft') return
       const target = e.target as HTMLElement
       if (target.matches('input, textarea, select') && (isPlainKey(combo) || !COMMANDS.find((c) => c.id === id)?.global)) return
       const command = commandsRef.current[id]
+      // A disabled command lets the key through (Enter, Escape, ⌘A keep their usual meaning).
+      if (command.enabled === false) return
       e.preventDefault()
-      if (command.enabled !== false) command.run()
+      command.run()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [composer, settingsTab, paletteOpen, mainKeys])
 
+  const folders = mailboxes.filter((b) => b.path !== current)
   const paletteItems = (): PaletteItem[] => [
     ...COMMANDS.filter((c) => !c.composer && c.id !== 'palette').map((c) => {
       const command = commands[c.id as keyof typeof commands]
@@ -498,10 +632,13 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
     }),
     ...mailboxes.map((b) => ({
       id: `box:${b.path}`,
-      title: `Go to ${b.name}`,
+      title: `Go to ${b.path.toUpperCase() === 'INBOX' ? 'Inbox' : b.path}`,
       group: 'Mailboxes',
       run: () => (setActiveLabel(null), setCurrent(b.path)),
     })),
+    ...(hasTargets
+      ? folders.map((b) => ({ id: `move:${b.path}`, title: `Move to ${b.path.toUpperCase() === 'INBOX' ? 'Inbox' : b.path}`, group: 'Move', run: () => void move({ path: b.path }) }))
+      : []),
     ...labelList.map((l) => ({
       id: `label:${l.id}`,
       title: `Show ${l.name}`,
@@ -512,10 +649,68 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         if (inbox && current !== inbox.path) setCurrent(inbox.path)
       },
     })),
-    ...(selected !== null
-      ? labelList.map((l) => ({ id: `set-label:${l.id}`, title: `Label as ${l.name}`, group: 'Labels', run: () => setLabel(l.id) }))
+    ...(hasTargets
+      ? [
+          ...labelList.map((l) => ({ id: `set-label:${l.id}`, title: `Label as ${l.name}`, group: 'Labels', run: () => setLabel(l.id) })),
+          { id: 'set-label:none', title: 'Label as none', group: 'Labels', run: () => setLabel(null) },
+        ]
       : []),
   ]
+
+  /** Native right-click menu for a row; the row joins the selection first if it is not part of it. */
+  const rowMenu = async (uid: number) => {
+    const inSelection = targets.includes(uid)
+    if (!inSelection) {
+      setChecked([])
+      void open(uid)
+    }
+    const uids = inSelection ? targets : [uid]
+    const list = source.filter((m) => uids.includes(m.uid))
+    const many = uids.length > 1
+    const acc = (id: CommandId) => toAccelerator(keysFor(id, overrides)[0])
+    const items: MenuItemSpec[] = [
+      ...(many
+        ? [{ label: `${uids.length} messages selected`, enabled: false }]
+        : [
+            // Replies need the loaded message, which only the already-open row has.
+            { id: 'reply', label: 'Reply', accelerator: acc('reply'), enabled: hasDetail && detail?.uid === uid },
+            { id: 'replyAll', label: 'Reply All', accelerator: acc('replyAll'), enabled: hasDetail && detail?.uid === uid },
+            { id: 'forward', label: 'Forward', accelerator: acc('forward'), enabled: hasDetail && detail?.uid === uid },
+            { id: 'draftReply', label: 'Draft Reply with AI', accelerator: acc('draftReply'), enabled: hasDetail && detail?.uid === uid },
+          ]),
+      { separator: true },
+      { id: 'archive', label: 'Archive', accelerator: acc('archive') },
+      { id: 'trash', label: box?.specialUse === 'trash' ? 'Delete Permanently' : 'Move to Trash', accelerator: acc('trash') },
+      { id: 'junk', label: 'Mark as Junk', accelerator: acc('junk'), enabled: box?.specialUse !== 'junk' },
+      { label: 'Move To', submenu: folders.map((b) => ({ id: `move:${b.path}`, label: b.path.toUpperCase() === 'INBOX' ? 'Inbox' : b.path })) },
+      { separator: true },
+      { id: 'read', label: list.every((m) => m.seen) ? 'Mark as Unread' : 'Mark as Read', accelerator: acc('toggleRead') },
+      { id: 'flag', label: list.every((m) => m.flagged) ? 'Unflag' : 'Flag', accelerator: acc('toggleFlag') },
+      ...(labelList.length
+        ? [
+            {
+              label: 'Label',
+              submenu: [
+                { id: 'label:', label: 'None', checked: list.every((m) => !m.label) },
+                { separator: true },
+                ...labelList.map((l) => ({ id: `label:${l.id}`, label: l.name, checked: list.every((m) => m.label === l.id) })),
+              ],
+            },
+          ]
+        : []),
+    ]
+    const chosen = await api.contextMenu(items)
+    if (!chosen) return
+    if (chosen === 'reply') reply('reply')
+    else if (chosen === 'replyAll') reply('all')
+    else if (chosen === 'forward') reply('forward')
+    else if (chosen === 'draftReply') reply('reply', { autoDraft: true })
+    else if (chosen === 'archive' || chosen === 'trash' || chosen === 'junk') void move(chosen, uids)
+    else if (chosen.startsWith('move:')) void move({ path: chosen.slice(5) }, uids)
+    else if (chosen === 'read') void toggle('seen', undefined, uids)
+    else if (chosen === 'flag') void toggle('flagged', undefined, uids)
+    else if (chosen.startsWith('label:')) setLabel(chosen.slice(6) || null, uids)
+  }
 
   // Appearance preferences apply to the whole window.
   useEffect(() => {
@@ -527,6 +722,16 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
     api.setZoom(prefs.zoom)
   }, [prefs.accent, prefs.zoom])
 
+  const columns = [
+    !layout.sidebarHidden && `${layout.sidebar}px`,
+    !layout.listHidden && `${layout.list}px`,
+    'minmax(360px, 1fr)',
+    assistantOpen && `${layout.assistant}px`,
+  ]
+    .filter(Boolean)
+    .join(' ')
+  const contactList = useMemo(() => Object.values(contacts), [contacts])
+
   async function refreshAll() {
     setRefreshing(true)
     await Promise.all([refreshMailboxes(), refreshList(current, false)])
@@ -534,7 +739,11 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   }
 
   return (
-    <div className={`app density-${prefs.density} ${assistantOpen ? 'with-assistant' : ''}`}>
+    <div
+      className={`app density-${prefs.density} ${assistantOpen ? 'with-assistant' : ''} ${layout.sidebarHidden ? 'no-sidebar' : ''} ${layout.listHidden ? 'no-list' : ''}`}
+      style={{ gridTemplateColumns: columns }}
+    >
+      {!layout.sidebarHidden && (
       <Sidebar
         account={account}
         mailboxes={mailboxes}
@@ -550,6 +759,9 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
           if (id && inbox && current !== inbox.path) setCurrent(inbox.path)
         }}
         onSettings={() => setSettingsTab('general')}
+        onHide={toggleSidebar}
+        collapsed={sections}
+        onToggleCollapsed={(key) => setSections((list) => (list.includes(key) ? list.filter((k) => k !== key) : [...list, key]))}
         composeHint={hint('compose')}
         onSelect={(path) => {
           setActiveLabel(null)
@@ -559,6 +771,8 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         onRefresh={refreshAll}
         onSignOut={onSignOut}
       />
+      )}
+      {!layout.listHidden && (
       <MessageList
         listRef={listRef}
         searchRef={searchRef}
@@ -575,9 +789,14 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         showRecipient={box?.specialUse === 'sent' || box?.specialUse === 'drafts'}
         onQuery={setQuery}
         onFilter={setFilter}
-        onSelect={(uid) => void open(uid)}
+        onPick={pick}
+        onRowMenu={(uid) => void rowMenu(uid)}
+        checked={checked}
+        sidebarHidden={layout.sidebarHidden}
+        onShowSidebar={toggleSidebar}
         onLoadMore={loadMore}
       />
+      )}
       <Reader
         summary={summary}
         detail={detail?.uid === selected ? detail : null}
@@ -600,6 +819,26 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         onTrash={() => void move('trash')}
         onToggleSeen={() => void toggle('seen')}
         onToggleFlag={() => void toggle('flagged')}
+        listHidden={layout.listHidden}
+        onShowList={toggleList}
+        inDrafts={inDrafts}
+        onEditDraft={editDraft}
+        bulk={
+          checked.length > 1
+            ? {
+                count: checked.length,
+                allRead: source.filter((m) => checked.includes(m.uid)).every((m) => m.seen),
+                allFlagged: source.filter((m) => checked.includes(m.uid)).every((m) => m.flagged),
+                onArchive: () => void move('archive'),
+                onTrash: () => void move('trash'),
+                onRead: (read) => void toggle('seen', read),
+                onFlag: (flagged) => void toggle('flagged', flagged),
+                onMove: () => openPalette('Move to '),
+                onLabel: () => openPalette('Label as '),
+                onClear: () => setChecked([]),
+              }
+            : undefined
+        }
       />
       {assistantOpen && (
         <Assistant
@@ -617,15 +856,54 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
           autoDraft={composer.autoDraft}
           snippets={settings?.snippets ?? []}
           shortcuts={overrides}
+          contacts={contactList}
+          onDraftSaved={() => {
+            notify('Draft saved')
+            if (inDrafts) void refreshList(current, false)
+          }}
           onClose={() => setComposer(null)}
           onSent={() => {
+            const wasDraft = composer.draft.draftUid !== undefined
             setComposer(null)
             notify('Sent')
-            if (detail) patchMessages([detail.uid], (m) => ({ ...m, answered: true }))
+            if (wasDraft && inDrafts) void refreshList(current, false)
+            else if (detail) patchMessages([detail.uid], (m) => ({ ...m, answered: true }))
           }}
         />
       )}
-      {paletteOpen && <Palette items={paletteItems()} onClose={() => setPaletteOpen(false)} />}
+      {paletteOpen && <Palette items={paletteItems()} initialQuery={paletteQuery} onClose={() => setPaletteOpen(false)} />}
+      {!layout.sidebarHidden && (
+        <Resizer
+          at={layout.sidebar}
+          min={180}
+          max={360}
+          onResize={(w) => setLayout((l) => ({ ...l, sidebar: w }))}
+          onCollapse={toggleSidebar}
+          onReset={() => setLayout((l) => ({ ...l, sidebar: 228 }))}
+        />
+      )}
+      {!layout.listHidden && (
+        <Resizer
+          at={layout.list}
+          offset={layout.sidebarHidden ? 0 : layout.sidebar}
+          min={280}
+          max={640}
+          onResize={(w) => setLayout((l) => ({ ...l, list: w }))}
+          onCollapse={toggleList}
+          onReset={() => setLayout((l) => ({ ...l, list: 372 }))}
+        />
+      )}
+      {assistantOpen && (
+        <Resizer
+          at={layout.assistant}
+          fromRight
+          min={280}
+          max={560}
+          onResize={(w) => setLayout((l) => ({ ...l, assistant: w }))}
+          onCollapse={() => setAssistantOpen(false)}
+          onReset={() => setLayout((l) => ({ ...l, assistant: 340 }))}
+        />
+      )}
       {settingsTab && settings && (
         <Settings
           settings={settings}
@@ -699,6 +977,54 @@ function buildReply(m: MessageDetail, mode: ReplyMode, self: string): Draft {
     inReplyTo: m.messageId,
     references,
   }
+}
+
+interface ResizerProps {
+  /** Current width of the pane being resized. */
+  at: number
+  /** Left edge of that pane, when it is not the first column. */
+  offset?: number
+  /** The pane sits against the right edge (the assistant). */
+  fromRight?: boolean
+  min: number
+  max: number
+  onResize: (width: number) => void
+  /** Dragging well past the minimum hides the pane. */
+  onCollapse: () => void
+  onReset: () => void
+}
+
+function Resizer({ at, offset = 0, fromRight, min, max, onResize, onCollapse, onReset }: ResizerProps) {
+  const start = (e: React.MouseEvent) => {
+    e.preventDefault()
+    const x0 = e.clientX
+    const move = (ev: MouseEvent) => {
+      const width = at + (fromRight ? x0 - ev.clientX : ev.clientX - x0)
+      if (width < min - 80) {
+        stop()
+        onCollapse()
+        return
+      }
+      onResize(Math.min(max, Math.max(min, width)))
+    }
+    const stop = () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', stop)
+      document.body.classList.remove('resizing')
+    }
+    document.body.classList.add('resizing')
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', stop)
+  }
+  return (
+    <div
+      className="resizer"
+      style={fromRight ? { right: at - 3 } : { left: offset + at - 3 }}
+      onMouseDown={start}
+      onDoubleClick={onReset}
+      title="Drag to resize, double-click to reset"
+    />
+  )
 }
 
 /** Leading blank lines leave room to type above the signature. */

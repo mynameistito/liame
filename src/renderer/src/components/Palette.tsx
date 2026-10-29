@@ -13,6 +13,8 @@ export interface PaletteItem {
 
 interface Props {
   items: PaletteItem[]
+  /** Prefilled text, e.g. "Move to " when opened from the move shortcut. */
+  initialQuery?: string
   onClose: () => void
 }
 
@@ -35,8 +37,8 @@ function score(text: string, query: string): number {
   return 500 - total
 }
 
-export function Palette({ items, onClose }: Props) {
-  const [query, setQuery] = useState('')
+export function Palette({ items, initialQuery = '', onClose }: Props) {
+  const [query, setQuery] = useState(initialQuery)
   const [active, setActive] = useState(0)
   const list = useRef<HTMLDivElement>(null)
 
