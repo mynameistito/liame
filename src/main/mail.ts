@@ -131,15 +131,34 @@ export class MailService {
   }
 
   /** Reads the local copy. A mailbox that never synced waits for its first sync; scrolling past the cache pulls older mail. */
-  async listMessages(path: string, offset = 0, limit = PAGE_SIZE): Promise<MessagePage> {
+  async listMessages(path: string, offset = 0, limit = PAGE_SIZE, threads = false): Promise<MessagePage> {
     const id = this.account.id
     if (!store.mailboxState(id, path)) await this.sync(path)
-    let messages = store.listMessages(id, path, offset, limit)
+    const read = () => (threads ? store.listThreads(id, path, offset, limit, this.threadExclusions()) : store.listMessages(id, path, offset, limit))
+    let messages = read()
     if (messages.length < limit && this.hasOlderOnServer(path)) {
       await this.fetchOlder(path)
-      messages = store.listMessages(id, path, offset, limit)
+      messages = read()
     }
     return { mailbox: path, messages, hasMore: messages.length === limit || this.hasOlderOnServer(path) }
+  }
+
+  /** The conversation oldest first, one entry per message even when the server keeps copies in several folders. */
+  getThread(thread: string): MessageSummary[] {
+    const allMail = this.mailboxes.find((box) => box.specialUse === 'all')?.path
+    const seen = new Map<string, MessageSummary>()
+    for (const m of store.getThread(this.account.id, thread, this.threadExclusions())) {
+      const id = m.messageId?.toLowerCase() ?? m.key
+      const kept = seen.get(id)
+      // Prefer the copy in a real folder over Gmail's All Mail.
+      if (!kept || (kept.mailbox === allMail && m.mailbox !== allMail)) seen.set(id, m)
+    }
+    return [...seen.values()].sort((a, b) => Date.parse(a.date) - Date.parse(b.date))
+  }
+
+  /** Conversations never pull in copies sitting in Trash or Spam. */
+  private threadExclusions(): string[] {
+    return this.mailboxes.filter((box) => box.specialUse === 'trash' || box.specialUse === 'junk').map((box) => box.path)
   }
 
   /** Brings the cached copy up to date: new mail, flag changes, and messages removed elsewhere. */

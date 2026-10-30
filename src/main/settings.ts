@@ -23,6 +23,7 @@ const DEFAULT_PREFS: Prefs = {
   density: 'comfortable',
   zoom: 1,
   darkenEmails: true,
+  conversations: true,
 }
 
 const DEFAULTS: Settings = {

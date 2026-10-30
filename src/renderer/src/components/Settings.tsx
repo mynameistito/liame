@@ -126,6 +126,9 @@ export function Settings({ settings, initialTab = 'general', onClose, onSaved }:
                   <option value="none">Return to the list</option>
                 </select>
               </Row>
+              <Row label="Conversations" hint="Group replies into one row per conversation, and show the whole conversation when you open it.">
+                <Toggle on={prefs.conversations} onChange={(v) => setPref('conversations', v)} />
+              </Row>
               <Row label="Remote images" hint="Blocking stops senders from seeing when you open their mail. Load them per message from the reader.">
                 <Toggle on={prefs.remoteImages} onChange={(v) => setPref('remoteImages', v)} labels={['Blocked', 'Loaded']} />
               </Row>

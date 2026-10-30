@@ -2011,3 +2011,79 @@ body.resizing * {
   color: var(--text-3);
   vertical-align: 1px;
 }
+
+/* Conversations */
+
+.thread-count {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+  color: var(--text-3);
+  background: var(--selected);
+  vertical-align: 1px;
+}
+.thread-card {
+  margin: 0 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--raised);
+}
+.thread-card.open {
+  background: transparent;
+}
+.thread-card-head {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  text-align: left;
+}
+.thread-card-head:hover {
+  background: var(--hover);
+  border-radius: var(--radius);
+}
+.avatar.small {
+  width: 26px;
+  height: 26px;
+  font-size: 11px;
+}
+.thread-card-main {
+  flex: 1;
+  min-width: 0;
+}
+.thread-card-top {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.thread-card-name {
+  flex: 1;
+  font-weight: 600;
+  font-size: 12.5px;
+}
+.thread-card-date {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.thread-card-preview {
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.thread-card-body {
+  padding: 4px 14px 14px 48px;
+}
+.thread-card > .spin {
+  margin: 0 0 12px 48px;
+}
+.reader-inner > .thread-card:last-of-type {
+  margin-bottom: 22px;
+}

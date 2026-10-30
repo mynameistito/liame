@@ -15,6 +15,7 @@ const api: LiameApi = {
   listMailboxes: call('listMailboxes'),
   listMessages: call('listMessages'),
   sync: call('sync'),
+  getThread: call('getThread'),
   searchLocal: call('searchLocal'),
   search: call('search'),
   getMessage: call('getMessage'),

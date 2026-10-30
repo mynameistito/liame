@@ -280,6 +280,64 @@ export function listMessages(account: string, mailbox: string, offset: number, l
   return rows.map(toSummary)
 }
 
+/**
+ * One row per conversation: the newest message of each thread in this mailbox, marked unread when any
+ * message of the thread here is unread. Counts and participants span the account, minus the excluded folders.
+ */
+export function listThreads(account: string, mailbox: string, offset: number, limit: number, exclude: string[]): MessageSummary[] {
+  const d = open()
+  const rows = d
+    .prepare(
+      `SELECT * FROM (
+         SELECT *,
+           row_number() OVER (PARTITION BY thread ORDER BY date DESC, uid DESC) AS rn,
+           sum(seen = 0) OVER (PARTITION BY thread) AS unseen_here,
+           max(flagged) OVER (PARTITION BY thread) AS flagged_here,
+           json_group_array(uid) OVER (PARTITION BY thread ORDER BY date DESC, uid DESC ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS uids_here
+         FROM messages WHERE account = ? AND mailbox = ?
+       ) WHERE rn = 1 ORDER BY date DESC, uid DESC LIMIT ? OFFSET ?`,
+    )
+    .all(account, mailbox, limit, offset) as unknown as Array<Row & { unseen_here: number; flagged_here: number; uids_here: string }>
+  if (!rows.length) return []
+  const threads = [...new Set(rows.map((r) => r.thread))]
+  const stats = new Map(
+    (
+      d
+        .prepare(
+          // Gmail keeps one message in several folders (Inbox and All Mail); count each Message-ID once.
+          `SELECT thread, count(DISTINCT coalesce(message_id, mailbox || '/' || uid)) AS total, json_group_array(from_name) AS names FROM (
+             SELECT thread, from_name, message_id, mailbox, uid FROM messages
+             WHERE account = ? AND thread IN (${threads.map(() => '?').join(',')}) AND mailbox NOT IN (${exclude.map(() => '?').join(',') || "''"})
+             ORDER BY date
+           ) GROUP BY thread`,
+        )
+        .all(account, ...threads, ...exclude) as Array<{ thread: string; total: number; names: string }>
+    ).map((s) => [s.thread, s]),
+  )
+  return rows.map((row) => {
+    const stat = stats.get(row.thread)
+    const names = stat ? (JSON.parse(stat.names) as string[]) : []
+    return {
+      ...toSummary(row),
+      seen: row.unseen_here === 0,
+      // Flagged when any message of the conversation here is.
+      flagged: row.flagged_here === 1,
+      threadUids: JSON.parse(row.uids_here) as number[],
+      threadCount: stat?.total ?? 1,
+      participants: [...new Set(names.filter(Boolean))],
+    }
+  })
+}
+
+export function getThread(account: string, thread: string, exclude: string[]): MessageSummary[] {
+  const rows = open()
+    .prepare(
+      `SELECT * FROM messages WHERE account = ? AND thread = ? AND mailbox NOT IN (${exclude.map(() => '?').join(',') || "''"}) ORDER BY date, uid`,
+    )
+    .all(account, thread, ...exclude) as unknown as Row[]
+  return rows.map(toSummary)
+}
+
 export function getMessages(account: string, mailbox: string, uids: number[]): MessageSummary[] {
   const get = open().prepare('SELECT * FROM messages WHERE account = ? AND mailbox = ? AND uid = ?')
   return uids.map((uid) => get.get(account, mailbox, uid) as Row | undefined).filter((r): r is Row => !!r).map(toSummary)

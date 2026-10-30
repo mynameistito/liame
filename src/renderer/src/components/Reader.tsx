@@ -51,6 +51,10 @@ interface Props {
   onEditDraft: () => void
   /** Set when several messages are picked; the reader then shows actions for all of them. */
   bulk?: BulkActions
+  /** The whole conversation, oldest first, when it holds more than the open message. */
+  thread: MessageSummary[] | null
+  expanded: Record<string, MessageDetail | 'loading'>
+  onToggleMessage: (key: string) => void
 }
 
 export interface BulkActions {
@@ -126,6 +130,14 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
 
   const message = detail ?? summary
   const recipients = [...message.to, ...(detail?.cc ?? [])]
+  // Other messages of the conversation sit around the open one in date order, collapsed until clicked.
+  // Gmail can hold the open message in several folders; leave out every copy of it, not just this folder's.
+  const openId = message.messageId?.toLowerCase()
+  const others = actions.thread?.filter((m) => m.key !== message.key && !(openId && m.messageId?.toLowerCase() === openId)) ?? []
+  const openedAt = Date.parse(message.date)
+  const card = (m: MessageSummary) => (
+    <ThreadCard key={m.key} message={m} body={actions.expanded[m.key]} darken={darken} blockImages={blockImages} onToggle={() => actions.onToggleMessage(m.key)} />
+  )
 
   return (
     <main className="pane reader">
@@ -139,11 +151,12 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
         <ToolButton title={`${inTrash ? 'Delete permanently' : 'Move to Trash'}  ${hint('trash')}`} onClick={actions.onTrash} icon={<Trash2 size={16} />} />
         <span className="sep" />
         <ToolButton
-          title={`${message.seen ? 'Mark as unread' : 'Mark as read'}  ${hint('toggleRead')}`}
+          title={`${summary.seen ? 'Mark as unread' : 'Mark as read'}  ${hint('toggleRead')}`}
           onClick={actions.onToggleSeen}
-          icon={message.seen ? <Mail size={16} /> : <MailOpen size={16} />}
+          icon={summary.seen ? <Mail size={16} /> : <MailOpen size={16} />}
         />
-        <ToolButton title={`${message.flagged ? 'Unflag' : 'Flag'}  ${hint('toggleFlag')}`} onClick={actions.onToggleFlag} on={message.flagged} icon={<Flag size={16} fill={message.flagged ? 'currentColor' : 'none'} />} />
+        {/* Read and flag state come from the row, which for a conversation covers all of its messages. */}
+        <ToolButton title={`${summary.flagged ? 'Unflag' : 'Flag'}  ${hint('toggleFlag')}`} onClick={actions.onToggleFlag} on={summary.flagged} icon={<Flag size={16} fill={summary.flagged ? 'currentColor' : 'none'} />} />
         <span className="spacer" />
         <ToolButton title={`Assistant  ${hint('assistant')}`} onClick={actions.onAssistant} on={assistantOpen} icon={<Sparkles size={15} />} />
         {detail?.html && (
@@ -158,6 +171,7 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
       <div className="reader-scroll">
         <article className="reader-inner">
           <h1 className="subject">{message.subject}</h1>
+          {others.filter((m) => Date.parse(m.date) <= openedAt).map(card)}
           <div className="sender">
             <div className="avatar" style={avatarColor(message.from)}>
               {initials(message.from)}
@@ -219,6 +233,8 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
             </div>
           )}
 
+          {others.filter((m) => Date.parse(m.date) > openedAt).map(card)}
+
           {detail && (
             <div className="reply-bar">
               {actions.inDrafts && (
@@ -243,6 +259,47 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
         </article>
       </div>
     </main>
+  )
+}
+
+function ThreadCard(props: { message: MessageSummary; body?: MessageDetail | 'loading'; darken: boolean; blockImages: boolean; onToggle: () => void }) {
+  const { message: m, body } = props
+  const { mail } = useAccount()
+  const open = body !== undefined
+  return (
+    <div className={`thread-card ${open ? 'open' : ''}`}>
+      <button className="thread-card-head" onClick={props.onToggle}>
+        <div className="avatar small" style={avatarColor(m.from)}>
+          {initials(m.from)}
+        </div>
+        <div className="thread-card-main">
+          <div className="thread-card-top">
+            <span className="thread-card-name">{displayName(m.from)}</span>
+            <span className="thread-card-date">{longDate(m.date)}</span>
+          </div>
+          {!open && <div className="thread-card-preview">{m.preview || m.subject}</div>}
+        </div>
+      </button>
+      {body === 'loading' && <LoaderCircle size={14} className="spin" color="var(--text-3)" />}
+      {body && body !== 'loading' && (
+        <div className="thread-card-body">
+          {body.html ? <EmailFrame html={body.html} darken={props.darken} blockImages={props.blockImages} /> : <PlainText text={body.text ?? ''} />}
+          {body.attachments.length > 0 && (
+            <div className="attachments">
+              {body.attachments.map((file) => (
+                <button key={file.partId} className="attachment" onClick={() => mail.saveAttachment(body.mailbox, body.uid, file.partId)} title="Save">
+                  <Paperclip size={15} />
+                  <div style={{ minWidth: 0 }}>
+                    <div className="attachment-name">{file.filename}</div>
+                    <div className="attachment-size">{fileSize(file.size)}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
