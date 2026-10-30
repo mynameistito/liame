@@ -824,7 +824,10 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   async function cancelScheduled(item: ScheduledItem) {
     try {
       const result = await api.cancelScheduled(item.id)
-      if (result) setComposer({ account: result.account, draft: result.draft, title: 'Edit scheduled message' })
+      if (result) {
+        setComposer({ account: result.account, draft: result.draft, title: 'Edit scheduled message' })
+        notify('Moved to Drafts')
+      }
       else notify(item.kind === 'snooze' ? 'Moved back' : 'Reminder dismissed')
     } catch (err) {
       notify(errorMessage(err))

@@ -59,10 +59,9 @@ function open(): DatabaseSync {
       due INTEGER NOT NULL,
       subject TEXT NOT NULL DEFAULT '',
       who TEXT NOT NULL DEFAULT '',
-      -- snooze: the messages (JSON arrays) in the Snoozed folder, and the folder they return to.
+      -- snooze: the Message-IDs (JSON array) waiting in the Snoozed folder, and the folder they return to.
       message_ids TEXT,
       mailbox TEXT,
-      uids TEXT,
       restore TEXT,
       -- followup: the message waiting for a reply, its conversation, and who sent it when. A later message
       -- in the conversation from anyone else counts as the reply.
@@ -397,7 +396,6 @@ export interface Scheduled {
   who: string
   messageIds?: string[]
   mailbox?: string
-  uids?: number[]
   restore?: string
   messageId?: string
   thread?: string
@@ -418,7 +416,6 @@ interface ScheduledRow {
   who: string
   message_ids: string | null
   mailbox: string | null
-  uids: string | null
   restore: string | null
   message_id: string | null
   thread: string | null
@@ -440,7 +437,6 @@ function toScheduled(r: ScheduledRow): Scheduled {
     who: r.who,
     messageIds: r.message_ids ? (JSON.parse(r.message_ids) as string[]) : undefined,
     mailbox: r.mailbox ?? undefined,
-    uids: r.uids ? (JSON.parse(r.uids) as number[]) : undefined,
     restore: r.restore ?? undefined,
     messageId: r.message_id ?? undefined,
     thread: r.thread ?? undefined,
@@ -456,8 +452,8 @@ function toScheduled(r: ScheduledRow): Scheduled {
 export function addScheduled(item: Scheduled): void {
   open()
     .prepare(
-      `INSERT INTO scheduled (id, account, kind, due, subject, who, message_ids, mailbox, uids, restore, message_id, thread, sender, sent_at, fired, draft, follow_up, error)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO scheduled (id, account, kind, due, subject, who, message_ids, mailbox, restore, message_id, thread, sender, sent_at, fired, draft, follow_up, error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       item.id,
@@ -468,7 +464,6 @@ export function addScheduled(item: Scheduled): void {
       item.who,
       item.messageIds ? JSON.stringify(item.messageIds) : null,
       item.mailbox ?? null,
-      item.uids ? JSON.stringify(item.uids) : null,
       item.restore ?? null,
       item.messageId ?? null,
       item.thread ?? null,
@@ -494,8 +489,9 @@ export function deleteScheduled(id: string): void {
   open().prepare('DELETE FROM scheduled WHERE id = ?').run(id)
 }
 
-export function updateScheduled(id: string, patch: { due?: number; fired?: boolean; error?: string | null }): void {
+export function updateScheduled(id: string, patch: { due?: number; fired?: boolean; error?: string | null; messageIds?: string[] }): void {
   const d = open()
+  if (patch.messageIds !== undefined) d.prepare('UPDATE scheduled SET message_ids = ? WHERE id = ?').run(JSON.stringify(patch.messageIds), id)
   if (patch.due !== undefined) d.prepare('UPDATE scheduled SET due = ? WHERE id = ?').run(patch.due, id)
   if (patch.fired !== undefined) d.prepare('UPDATE scheduled SET fired = ? WHERE id = ?').run(patch.fired ? 1 : 0, id)
   if (patch.error !== undefined) d.prepare('UPDATE scheduled SET error = ? WHERE id = ?').run(patch.error, id)
@@ -510,9 +506,18 @@ export function findMessage(account: string, messageId: string, avoid: string[] 
   return row && toSummary(row)
 }
 
-/** Whether anyone other than `sender` wrote in the conversation after `since`. */
-export function hasReply(account: string, thread: string, since: number, sender: string): boolean {
+/** Stored copies in one folder of the messages with these Message-IDs. */
+export function findIn(account: string, mailbox: string, messageIds: string[]): MessageSummary[] {
+  const find = open().prepare('SELECT * FROM messages WHERE account = ? AND mailbox = ? AND lower(message_id) = lower(?)')
+  return messageIds.flatMap((id) => (find.all(account, mailbox, id) as unknown as Row[]).map(toSummary))
+}
+
+/** Whether anyone other than `sender` wrote in the conversation after `since`, outside the `skip` folders (Drafts). */
+export function hasReply(account: string, thread: string, since: number, sender: string, skip: string[]): boolean {
   return !!open()
-    .prepare('SELECT 1 FROM messages WHERE account = ? AND thread = ? AND date > ? AND lower(from_address) != lower(?) LIMIT 1')
-    .get(account, thread, since, sender)
+    .prepare(
+      `SELECT 1 FROM messages WHERE account = ? AND thread = ? AND date > ? AND lower(from_address) != lower(?)
+       AND mailbox NOT IN (${skip.map(() => '?').join(',') || "''"}) LIMIT 1`,
+    )
+    .get(account, thread, since, sender, ...skip)
 }

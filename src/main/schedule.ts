@@ -4,7 +4,7 @@ import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import type { AccountConfig, Draft, MessageSummary, ScheduledItem } from '../shared/types'
 import type { MailService } from './mail'
-import { checkRecipients, sendDraft, type StoredAttachment } from './send'
+import { buildRaw, checkRecipients, sendDraft, type StoredAttachment } from './send'
 import * as store from './store'
 
 /**
@@ -14,7 +14,7 @@ import * as store from './store'
 export interface SchedulerHost {
   account(id: string): AccountConfig | undefined
   service(id: string): MailService | undefined
-  /** Brings an account's Inbox and Sent up to date, so replies are in the store before a reminder checks. */
+  /** Brings an account's Inbox and Sent up to date, so replies are in the store before a reminder checks. Throws when it cannot. */
   refresh(id: string): Promise<void>
   /** A system notification; clicking it opens the message when one is given. */
   notify(title: string, body: string, open?: { accountId: string; mailbox: string; uid: number }): void
@@ -35,9 +35,11 @@ export function startScheduler(h: SchedulerHost): void {
   setInterval(() => void runDue(), 30_000)
 }
 
+/** Every item to show. A snooze whose messages were all moved out of Snoozed by hand is hidden; it ends at its time. */
 export function listItems(): ScheduledItem[] {
-  return store.listScheduled().map((item) => {
+  return store.listScheduled().flatMap((item) => {
     const where = locate(item)
+    if (item.kind === 'snooze' && !where) return []
     return {
       id: item.id,
       account: item.account,
@@ -53,8 +55,14 @@ export function listItems(): ScheduledItem[] {
   })
 }
 
-/** Records a snooze for messages just moved to the Snoozed folder. `rows` are their summaries from before the move. */
-export function addSnooze(account: string, rows: MessageSummary[], snoozed: string, uids: number[], restore: string, due: number): void {
+/**
+ * Records a snooze for messages just moved to the Snoozed folder. Each message is tracked by its Message-ID,
+ * so a message snoozed again moves to the new time on its own, and the snooze follows it through renumbering.
+ * `restore` is the folder they came from; snoozing again from Snoozed keeps the folder recorded before.
+ */
+export async function addSnooze(account: string, rows: MessageSummary[], snoozed: string, restore: string | undefined, due: number): Promise<void> {
+  const ids = rows.map((m) => m.messageId!.toLowerCase())
+  const earlier = await dropSnoozed(account, ids)
   const newest = [...rows].sort((a, b) => Date.parse(b.date) - Date.parse(a.date))[0]
   store.addScheduled({
     id: randomUUID(),
@@ -63,32 +71,29 @@ export function addSnooze(account: string, rows: MessageSummary[], snoozed: stri
     due,
     subject: newest?.subject ?? '',
     who: newest ? newest.from.name || newest.from.address : '',
-    messageIds: rows.map((m) => m.messageId).filter((id): id is string => !!id),
+    messageIds: ids,
     mailbox: snoozed,
-    uids,
-    restore,
+    restore: restore ?? earlier ?? 'INBOX',
   })
   host?.changed()
 }
 
-/** Snoozing again from the Snoozed folder moves the existing snooze to the new time. */
-export function resnooze(account: string, mailbox: string, uids: number[], due: number): void {
-  for (const item of store.listScheduled()) {
-    if (item.kind === 'snooze' && item.account === account && item.mailbox === mailbox && item.uids?.some((uid) => uids.includes(uid))) {
-      store.updateScheduled(item.id, { due })
-    }
+/** Ends the snooze of these messages (an undo took them back out). Returns the folder they were going back to. */
+export async function dropSnoozed(account: string, messageIds: string[]): Promise<string | undefined> {
+  const drop = new Set(messageIds.map((id) => id.toLowerCase()))
+  let restore: string | undefined
+  for (const { id } of store.listScheduled()) {
+    await withItem(id, async () => {
+      const item = store.getScheduled(id)
+      if (item?.kind !== 'snooze' || item.account !== account || !item.messageIds?.some((m) => drop.has(m))) return
+      restore ??= item.restore
+      const left = item.messageIds.filter((m) => !drop.has(m))
+      if (left.length) store.updateScheduled(id, { messageIds: left })
+      else store.deleteScheduled(id)
+    })
   }
   host?.changed()
-}
-
-/** Drops snoozes for messages that an undo moved back out of the Snoozed folder. */
-export function forgetSnoozed(account: string, mailbox: string, uids: number[]): void {
-  for (const item of store.listScheduled()) {
-    if (item.kind === 'snooze' && item.account === account && item.mailbox === mailbox && item.uids?.some((uid) => uids.includes(uid))) {
-      store.deleteScheduled(item.id)
-    }
-  }
-  host?.changed()
+  return restore
 }
 
 /** Remembers to remind about a message unless someone other than its sender replies by `due`. */
@@ -155,27 +160,57 @@ export async function queueSend(account: AccountConfig, draft: Draft, kept: Stor
 }
 
 /**
- * Undoes an item: a snooze returns now, a reminder is dismissed, and a queued send comes back as a draft to edit.
- * The outbox copy of its attachments stays until the next launch, since the composer reads them from there.
+ * Undoes an item: a snooze returns now, a reminder is dismissed, and a queued send goes to Drafts and comes back
+ * to edit, so closing the composer keeps it. The outbox copy of its attachments stays until the next launch.
  */
-export async function cancel(id: string): Promise<{ account: string; draft: Draft } | null> {
-  const item = store.getScheduled(id)
-  if (!item) return null
-  if (item.kind === 'snooze') await returnSnooze(item)
-  store.deleteScheduled(id)
-  host?.changed()
-  return item.kind === 'send' && item.draft ? { account: item.account, draft: item.draft } : null
+export function cancel(id: string): Promise<{ account: string; draft: Draft } | null> {
+  return withItem(id, async () => {
+    const item = store.getScheduled(id)
+    if (!item) throw new Error('That already happened.')
+    let edit: { account: string; draft: Draft } | null = null
+    if (item.kind === 'snooze') await returnSnooze(item)
+    if (item.kind === 'send' && item.draft) edit = { account: item.account, draft: await toDrafts(item.account, item.draft) }
+    store.deleteScheduled(id)
+    host?.changed()
+    return edit
+  })
+}
+
+/** Saves a queued message in Drafts. The returned draft points at that copy, the way the composer's own save does. */
+async function toDrafts(accountId: string, draft: Draft): Promise<Draft> {
+  const account = host?.account(accountId)
+  const svc = host?.service(accountId)
+  if (!account || !svc) throw new Error('That account no longer exists.')
+  const uid = await svc.saveDraft(await buildRaw(account, draft, []), undefined)
+  if (!uid) return draft
+  return { ...draft, draftUid: uid, kept: draft.attachments.map((path, partId) => ({ partId, filename: basename(path) })), attachments: [] }
+}
+
+/** Runs one item at a time, so a cancel or a new snooze never overlaps the scheduler working on the same item. */
+const inFlight = new Map<string, Promise<unknown>>()
+function withItem<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const next = (inFlight.get(id) ?? Promise.resolve()).catch(() => {}).then(fn)
+  inFlight.set(id, next)
+  const clear = () => {
+    if (inFlight.get(id) === next) inFlight.delete(id)
+  }
+  next.then(clear, clear)
+  return next
 }
 
 async function runDue(): Promise<void> {
   if (running || !host) return
   running = true
   try {
-    const now = Date.now()
-    for (const item of store.listScheduled()) {
-      if (!host.service(item.account)) continue
+    for (const { id } of store.listScheduled()) {
+      if (inFlight.has(id)) continue
       try {
-        if (await run(item, now)) host.changed()
+        // Read again under the lock: the item may have been cancelled or moved since the list was read.
+        const changed = await withItem(id, async () => {
+          const item = store.getScheduled(id)
+          return item && host?.service(item.account) ? run(item, Date.now()) : false
+        })
+        if (changed) host.changed()
       } catch {
         // Offline or the server refused; the next run tries again. Sends record why (see sendQueued).
       }
@@ -199,17 +234,15 @@ async function returnSnooze(item: store.Scheduled): Promise<void> {
   const svc = host?.service(item.account)
   if (!svc || !item.mailbox || !item.restore) return
   // False means the messages were moved out of Snoozed by hand; the snooze is simply over.
-  await svc.returnSnoozed(item.mailbox, item.messageIds ?? [], item.uids ?? [], item.restore)
+  await svc.returnSnoozed(item.mailbox, item.messageIds ?? [], item.restore)
 }
 
 async function sendQueued(item: store.Scheduled): Promise<void> {
   const account = host?.account(item.account)
   if (!account || !item.draft) return
+  let messageId: string
   try {
-    const messageId = await sendDraft(account, item.draft, [])
-    await rm(join(outbox(), item.id), { recursive: true, force: true })
-    if (item.followUp) remindAfterSend(account, item.draft, messageId, item.followUp)
-    void host?.service(item.account)?.sync('INBOX').catch(() => {})
+    messageId = await sendDraft(account, item.draft, [])
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     // Tell once per failure streak, not on every retry.
@@ -218,15 +251,23 @@ async function sendQueued(item: store.Scheduled): Promise<void> {
     host?.changed()
     throw error
   }
+  // Gone from the queue before anything else can fail, so it is never sent twice. Leftover files go at next launch.
+  store.deleteScheduled(item.id)
+  await rm(join(outbox(), item.id), { recursive: true, force: true }).catch(() => {})
+  if (item.followUp) remindAfterSend(account, item.draft, messageId, item.followUp)
+  void host?.service(item.account)?.sync('INBOX').catch(() => {})
 }
 
 /** A due reminder fires unless someone replied; a fired one goes away once a reply arrives. */
 async function checkReminder(item: store.Scheduled, now: number): Promise<boolean> {
   if (!item.fired && item.due > now) return false
+  // Fails while offline, so a reminder never fires on stale mail; the next run tries again.
   if (!item.fired) await host?.refresh(item.account)
   const ref = item.messageId ? store.findMessage(item.account, item.messageId) : undefined
   const thread = ref?.thread ?? item.thread
-  if (thread && item.sender && store.hasReply(item.account, thread, item.sentAt ?? 0, item.sender)) {
+  // A saved but unsent reply in Drafts is not an answer.
+  const skip = specialPaths(item.account, ['drafts', 'trash', 'junk'])
+  if (thread && item.sender && store.hasReply(item.account, thread, item.sentAt ?? 0, item.sender, skip)) {
     store.deleteScheduled(item.id)
     return true
   }
@@ -237,24 +278,21 @@ async function checkReminder(item: store.Scheduled, now: number): Promise<boolea
   return true
 }
 
-/** Where to open the item's message: the Snoozed copy, or the stored copy of the reminded message. */
+/** Where to open the item's message: a snoozed message still in Snoozed, or the stored copy of the reminded message. */
 function locate(item: store.Scheduled): { mailbox: string; uid: number } | undefined {
-  if (item.kind === 'snooze' && item.mailbox && item.uids?.length) {
-    // The store knows the current UID even when the server renumbered it.
-    const id = item.messageIds?.[0]
-    const found = id ? store.findMessage(item.account, id) : undefined
-    if (found && found.mailbox === item.mailbox) return { mailbox: found.mailbox, uid: found.uid }
-    return { mailbox: item.mailbox, uid: item.uids[0] }
+  if (item.kind === 'snooze' && item.mailbox) {
+    const found = store.findIn(item.account, item.mailbox, item.messageIds ?? [])[0]
+    return found && { mailbox: found.mailbox, uid: found.uid }
   }
   if (item.kind === 'followup' && item.messageId) {
-    const found = store.findMessage(item.account, item.messageId, allMailPaths(item.account))
+    const found = store.findMessage(item.account, item.messageId, specialPaths(item.account, ['all']))
     if (found) return { mailbox: found.mailbox, uid: found.uid }
   }
   return undefined
 }
 
-function allMailPaths(account: string): string[] {
-  return (store.loadMailboxList(account) ?? []).filter((b) => b.specialUse === 'all').map((b) => b.path)
+function specialPaths(account: string, uses: string[]): string[] {
+  return (store.loadMailboxList(account) ?? []).filter((b) => b.specialUse && uses.includes(b.specialUse)).map((b) => b.path)
 }
 
 /** Outbox folders whose send is gone (sent, cancelled, or the account removed). */

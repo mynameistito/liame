@@ -390,12 +390,10 @@ export class MailService {
    * Moves snoozed messages back to `to` as unread, so they arrive like new mail. They are found by Message-ID,
    * since their UIDs can change while they wait. Returns false when none are left in `from` (moved by hand).
    */
-  async returnSnoozed(from: string, messageIds: string[], uids: number[], to: string): Promise<boolean> {
+  async returnSnoozed(from: string, messageIds: string[], to: string): Promise<boolean> {
     const found = await this.withMailbox(from, async (client) => {
       const hits = new Set<number>()
       for (const id of messageIds) for (const uid of (await client.search({ header: { 'message-id': id } }, { uid: true })) || []) hits.add(uid)
-      // Messages without a Message-ID can only be found by the UIDs they were snoozed with.
-      if (!messageIds.length && uids.length) for (const uid of (await client.search({ uid: uids.join(',') }, { uid: true })) || []) hits.add(uid)
       const list = [...hits]
       if (!list.length) return list
       await client.messageFlagsRemove(list, ['\\Seen'], { uid: true })
