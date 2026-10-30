@@ -9,7 +9,8 @@ interface Props {
   title: string
   unread: number
   messages: MessageSummary[]
-  selected: number | null
+  /** Key of the open message. */
+  selected: string | null
   loading: boolean
   error: string
   query: string
@@ -20,9 +21,12 @@ interface Props {
   onQuery: (query: string) => void
   onFilter: (filter: Filter) => void
   /** Click on a row; ⌘ and ⇧ pick messages for bulk actions instead of opening. */
-  onPick: (uid: number, mods: { meta: boolean; shift: boolean }) => void
-  onRowMenu: (uid: number) => void
-  checked: number[]
+  onPick: (key: string, mods: { meta: boolean; shift: boolean }) => void
+  onRowMenu: (key: string) => void
+  checked: string[]
+  /** The open folder; rows from other folders (search results) show where they live. */
+  mailbox: string
+  mailboxNames: Map<string, string>
   sidebarHidden: boolean
   onShowSidebar: () => void
   onLoadMore: () => void
@@ -100,11 +104,12 @@ export function MessageList(props: Props) {
         )}
         {messages.map((m) => (
           <Row
-            key={m.uid}
+            key={m.key}
             message={m}
             label={m.label ? props.labels.get(m.label) : undefined}
-            selected={m.uid === selected}
-            checked={props.checked.includes(m.uid)}
+            folder={m.mailbox !== props.mailbox ? (props.mailboxNames.get(m.mailbox) ?? m.mailbox) : undefined}
+            selected={m.key === selected}
+            checked={props.checked.includes(m.key)}
             showRecipient={showRecipient}
             onPick={props.onPick}
             onMenu={props.onRowMenu}
@@ -123,10 +128,12 @@ interface RowProps {
   checked: boolean
   showRecipient: boolean
   onPick: Props['onPick']
-  onMenu: (uid: number) => void
+  onMenu: (key: string) => void
+  /** Folder name, shown only for rows outside the open folder. */
+  folder?: string
 }
 
-function Row({ message: m, label, selected, checked, showRecipient, onPick, onMenu }: RowProps) {
+function Row({ message: m, label, folder, selected, checked, showRecipient, onPick, onMenu }: RowProps) {
   const who = showRecipient ? `To: ${m.to.map(displayName).join(', ') || 'No recipients'}` : displayName(m.from)
   return (
     <button
@@ -135,11 +142,11 @@ function Row({ message: m, label, selected, checked, showRecipient, onPick, onMe
         if (e.button !== 0) return
         // Shift-click would otherwise select text across rows.
         if (e.shiftKey) e.preventDefault()
-        onPick(m.uid, { meta: e.metaKey, shift: e.shiftKey })
+        onPick(m.key, { meta: e.metaKey, shift: e.shiftKey })
       }}
       onContextMenu={(e) => {
         e.preventDefault()
-        onMenu(m.uid)
+        onMenu(m.key)
       }}
       tabIndex={-1}
     >
@@ -153,6 +160,7 @@ function Row({ message: m, label, selected, checked, showRecipient, onPick, onMe
         </span>
       </div>
       <div className="row-subject">
+        {folder && <span className="folder-tag">{folder}</span>}
         {label && (
           <span className="label-tag">
             <i style={{ background: label.color }} />

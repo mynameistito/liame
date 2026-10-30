@@ -42,7 +42,13 @@ export interface Address {
 }
 
 export interface MessageSummary {
+  /** Unique across accounts and folders: account, mailbox, and UID. Use it for identity; uid alone repeats across folders. */
+  key: string
+  account: string
+  mailbox: string
   uid: number
+  /** Conversation key: Gmail's thread id, else the first Message-ID of the reply chain. */
+  thread?: string
   messageId?: string
   from: Address
   to: Address[]
@@ -58,10 +64,9 @@ export interface MessageSummary {
 
 export interface MessagePage {
   mailbox: string
-  total: number
   messages: MessageSummary[]
-  /** Highest sequence number not yet loaded, 0 when the list is complete. */
-  nextBefore: number
+  /** More messages exist past this page, locally or on the server. */
+  hasMore: boolean
 }
 
 export interface Attachment {
@@ -112,7 +117,7 @@ export interface MenuItemSpec {
 }
 
 export interface MailEvent {
-  type: 'new-mail' | 'mailboxes-changed' | 'connection' | 'accounts-changed' | 'open-message'
+  type: 'new-mail' | 'mailboxes-changed' | 'mailbox-synced' | 'connection' | 'accounts-changed' | 'open-message'
   accountId?: string
   mailbox?: string
   status?: ConnectionStatus
@@ -232,9 +237,14 @@ export interface LiameApi {
   /** A notification click that arrived while no window was open. */
   takePendingOpen(): Promise<MailEvent | null>
   listMailboxes(accountId: string): Promise<Mailbox[]>
-  listMessages(accountId: string, mailbox: string, before?: number): Promise<MessagePage>
-  previews(accountId: string, mailbox: string, uids: number[]): Promise<Record<number, string>>
+  /** Reads the local store; the first call for a mailbox waits for its initial sync. */
+  listMessages(accountId: string, mailbox: string, offset?: number, limit?: number): Promise<MessagePage>
+  /** Brings the local copy of a mailbox up to date; a 'mailbox-synced' event follows. */
+  sync(accountId: string, mailbox: string): Promise<void>
+  /** Server-side search in one mailbox (finds body text the local index does not have). */
   search(accountId: string, mailbox: string, query: string): Promise<MessageSummary[]>
+  /** Instant search over every synced folder of the given accounts. */
+  searchLocal(accountIds: string[], query: string): Promise<MessageSummary[]>
   getMessage(accountId: string, mailbox: string, uid: number): Promise<MessageDetail>
   setFlags(accountId: string, mailbox: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }): Promise<void>
   move(accountId: string, mailbox: string, uids: number[], target: MoveTarget): Promise<MoveResult | null>
