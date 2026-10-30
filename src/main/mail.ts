@@ -49,8 +49,8 @@ export class MailService {
   private watcherRetry: NodeJS.Timeout | null = null
   private stopped = false
   private mailboxes: Mailbox[] = []
-  /** Highest INBOX UID already reported as new, so notifications only cover arrivals. */
-  private inboxSeenUid = 0
+  /** Highest INBOX UID already reported as new, so notifications only cover arrivals. Null until the watcher connects. */
+  private inboxSeenUid: number | null = null
   private previewCache = new Map<string, string>()
   private parsedCache = new Map<string, ParsedMail>()
 
@@ -252,9 +252,10 @@ export class MailService {
 
   /** Unread INBOX messages that arrived since the last call (or since the watcher connected). */
   async takeNewInbox(): Promise<MessageSummary[]> {
-    const since = this.inboxSeenUid
-    if (!since) return []
+    if (this.inboxSeenUid === null) return []
     return this.withMailbox('INBOX', async (client) => {
+      // Read under the lock, so overlapping arrival events cannot report the same messages twice.
+      const since = this.inboxSeenUid ?? 0
       const fresh: MessageSummary[] = []
       for await (const msg of client.fetch(`${since + 1}:*`, SUMMARY_QUERY, { uid: true })) {
         // "n:*" always returns the newest message, even when nothing is newer than n.
@@ -379,7 +380,7 @@ export class MailService {
       await watcher.connect()
       const inbox = await watcher.mailboxOpen('INBOX')
       // Everything already in INBOX at connect time is old news for notifications.
-      if (!this.inboxSeenUid) this.inboxSeenUid = Math.max(0, Number(inbox.uidNext ?? 1) - 1)
+      if (this.inboxSeenUid === null) this.inboxSeenUid = Math.max(0, Number(inbox.uidNext ?? 1) - 1)
       this.watcher = watcher
       this.emit({ type: 'connection', status: 'online' })
     } catch {

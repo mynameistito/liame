@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   Draft,
+  MailEvent,
   Mailbox,
   MessageContext,
   MessageDetail,
@@ -69,13 +70,17 @@ export function App() {
 
   const reload = useCallback(() => api.listAccounts().then(setAccounts), [])
   useEffect(() => {
+    const openMessage = (event: MailEvent | null) => {
+      if (event?.type !== 'open-message' || !event.accountId) return
+      setActiveId(event.accountId)
+      setOpenRequest({ accountId: event.accountId, mailbox: event.mailbox ?? 'INBOX', uid: event.uid, at: Date.now() })
+    }
     void reload()
+    // A notification clicked while the window was closed is waiting in the main process.
+    void api.takePendingOpen().then(openMessage)
     return api.onEvent((event) => {
       if (event.type === 'accounts-changed') void reload()
-      if (event.type === 'open-message' && event.accountId) {
-        setActiveId(event.accountId)
-        setOpenRequest({ accountId: event.accountId, mailbox: event.mailbox ?? 'INBOX', uid: event.uid, at: Date.now() })
-      }
+      openMessage(event)
     })
   }, [reload, setActiveId])
 
@@ -103,6 +108,7 @@ export function App() {
         account={active}
         accounts={accounts}
         openRequest={openRequest?.accountId === active.id ? openRequest : null}
+        onOpenHandled={() => setOpenRequest(null)}
         onSwitch={setActiveId}
         onAdd={() => setAdding(true)}
         onRemove={async (id) => {
@@ -119,12 +125,14 @@ interface MailProps {
   account: AccountSummary
   accounts: AccountSummary[]
   openRequest: OpenRequest | null
+  /** Clears the request so a later remount of this account does not open it again. */
+  onOpenHandled: () => void
   onSwitch: (id: string) => void
   onAdd: () => void
   onRemove: (id: string) => void
 }
 
-function Mail({ account, accounts, openRequest, onSwitch, onAdd, onRemove }: MailProps) {
+function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, onRemove }: MailProps) {
   const { mail } = useAccount()
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([])
   const [current, setCurrent] = useState('')
@@ -362,6 +370,7 @@ function Mail({ account, accounts, openRequest, onSwitch, onAdd, onRemove }: Mai
     if (openRequest.uid !== undefined) pendingOpen.current = { path: target.path, uid: openRequest.uid }
     if (currentRef.current === target.path) void refreshList(target.path, false)
     else setCurrent(target.path)
+    onOpenHandled()
     // Each request runs once; `at` changes for every new click.
   }, [openRequest?.at, mailboxes.length > 0])
 

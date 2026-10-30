@@ -100,15 +100,26 @@ async function announce(accountId: string): Promise<void> {
   const account = accounts.find((a) => a.id === accountId)
   const show = (title: string, body: string, uid?: number) => {
     const n = new Notification({ title, subtitle: accounts.length > 1 ? account?.email : undefined, body })
-    n.on('click', () => {
-      focusWindow()
-      send({ type: 'open-message', accountId, mailbox: 'INBOX', uid })
-    })
+    n.on('click', () => openFromNotification({ type: 'open-message', accountId, mailbox: 'INBOX', uid }))
     n.show()
   }
   const sender = (m: (typeof fresh)[number]) => m.from.name || m.from.address
   if (fresh.length > 3) show(`${fresh.length} new messages`, fresh.slice(0, 3).map(sender).join(', '))
   else for (const m of fresh) show(sender(m), m.subject, m.uid)
+}
+
+/** A notification click waiting for a window: macOS keeps the app running after its window closes. */
+let pendingOpen: MailEvent | null = null
+
+function openFromNotification(event: MailEvent): void {
+  if (window) {
+    focusWindow()
+    send(event)
+    return
+  }
+  // The new window's renderer asks for this once it has mounted.
+  pendingOpen = event
+  createWindow()
 }
 
 function focusWindow(): void {
@@ -205,6 +216,11 @@ function summaries(): AccountSummary[] {
 
 function registerIpc(): void {
   handle('listAccounts', () => summaries())
+  handle('takePendingOpen', () => {
+    const event = pendingOpen
+    pendingOpen = null
+    return event
+  })
   handle('testAccount', async (next: AccountInput) => {
     try {
       await MailService.test(next)
@@ -250,9 +266,11 @@ function registerIpc(): void {
   handle('previews', (id: string, path: string, uids: number[]) => service(id).previews(path, uids))
   handle('search', (id: string, path: string, query: string) => service(id).search(path, query))
   handle('getMessage', (id: string, path: string, uid: number) => service(id).getMessage(path, uid))
-  handle('setFlags', (id: string, path: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }) =>
-    service(id).setFlags(path, uids, flags),
-  )
+  handle('setFlags', async (id: string, path: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }) => {
+    await service(id).setFlags(path, uids, flags)
+    // Reading mail changes this account's count in the switcher and the Dock badge.
+    if (flags.seen !== undefined) void refreshUnread(id)
+  })
   handle('move', (id: string, path: string, uids: number[], target: MoveTarget) => service(id).move(path, uids, target))
   handle('markAllRead', (id: string, path: string) => service(id).markAllRead(path))
   handle('saveDraft', async (id: string, draft: Draft) => {
