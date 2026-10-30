@@ -17,11 +17,11 @@ import type {
   MessagePage,
   MessageSummary,
   MoveResult,
+  MoveTarget,
   SpecialUse,
 } from '../shared/types'
 
 const PAGE_SIZE = 50
-const PREVIEW_BYTES = 12_000
 
 const SPECIAL_USE: Record<string, SpecialUse> = {
   '\\Inbox': 'inbox',
@@ -120,12 +120,22 @@ export class MailService {
     })
     if (missing.length === 0) return out
     await this.withMailbox(path, async (client) => {
-      const sources: Array<[number, Buffer]> = []
-      for await (const msg of client.fetch(missing, { uid: true, source: { maxLength: PREVIEW_BYTES } }, { uid: true })) {
-        if (msg.source) sources.push([msg.uid, msg.source])
+      // Download only the readable body part, decoded, so long headers and inline CSS cannot crowd out the text.
+      const parts: Array<{ uid: number; part: string; html: boolean }> = []
+      for await (const msg of client.fetch(missing, { uid: true, bodyStructure: true }, { uid: true })) {
+        const found = msg.bodyStructure ? textPart(msg.bodyStructure) : null
+        if (found) parts.push({ uid: msg.uid, ...found })
+        else out[msg.uid] = ''
       }
-      for (const [uid, source] of sources) {
-        const preview = await parsePreview(source)
+      for (const { uid, part, html } of parts) {
+        let text = ''
+        try {
+          const { content } = await client.download(String(uid), part, { uid: true, maxBytes: html ? 96_000 : 8_000 })
+          if (content) text = await readText(content)
+        } catch {
+          // An unreadable part just leaves the preview empty.
+        }
+        const preview = cleanPreview(html ? htmlToText(text) : text)
         this.previewCache.set(this.key(path, uid), preview)
         out[uid] = preview
       }
@@ -158,7 +168,9 @@ export class MailService {
       return {
         ...summary,
         cc: addresses(parsed.cc),
+        bcc: addresses(parsed.bcc),
         replyTo: addresses(parsed.replyTo),
+        inReplyTo: parsed.inReplyTo,
         messageId: parsed.messageId,
         references: toArray(parsed.references),
         html,
@@ -178,8 +190,8 @@ export class MailService {
     })
   }
 
-  async move(path: string, uids: number[], target: SpecialUse): Promise<MoveResult | null> {
-    const destination = await this.pathFor(target)
+  async move(path: string, uids: number[], target: MoveTarget): Promise<MoveResult | null> {
+    const destination = typeof target === 'string' ? await this.pathFor(target) : target.path
     const result = await this.withMailbox(path, async (client) => {
       if (destination === path) {
         // Deleting from Trash removes the message for good.
@@ -193,6 +205,36 @@ export class MailService {
     })
     this.emit({ type: 'mailboxes-changed' })
     return result
+  }
+
+  async markAllRead(path: string): Promise<void> {
+    await this.withMailbox(path, async (client) => {
+      if (client.mailbox && client.mailbox.exists > 0) await client.messageFlagsAdd('1:*', ['\\Seen'])
+    })
+    this.emit({ type: 'mailboxes-changed' })
+  }
+
+  /** Stores a draft in the Drafts folder, replacing the previous copy. Returns the new UID when the server reports it. */
+  async saveDraft(raw: Buffer, replaceUid?: number): Promise<number | null> {
+    const drafts = await this.pathFor('drafts')
+    const client = await this.connection()
+    const appended = await client.append(drafts, raw, ['\\Draft', '\\Seen'])
+    if (replaceUid) await this.deleteDraft(replaceUid)
+    this.emit({ type: 'mailboxes-changed' })
+    return appended ? (appended.uid ?? null) : null
+  }
+
+  /** Attachments of a saved draft, to carry into its next version. */
+  async draftAttachments(uid: number, partIds: number[]): Promise<Array<{ filename: string; content: Buffer }>> {
+    const drafts = await this.pathFor('drafts')
+    const out = []
+    for (const partId of partIds) out.push(await this.attachment(drafts, uid, partId))
+    return out
+  }
+
+  async deleteDraft(uid: number): Promise<void> {
+    const drafts = await this.pathFor('drafts')
+    await this.withMailbox(drafts, (client) => client.messageDelete([uid], { uid: true }))
   }
 
   async undoMove(move: MoveResult): Promise<void> {
@@ -355,31 +397,49 @@ function hasAttachment(node: MessageStructureObject): boolean {
   return (node.childNodes ?? []).some(hasAttachment)
 }
 
-async function parsePreview(source: Buffer): Promise<string> {
-  try {
-    const parsed = await simpleParser(source, { skipImageLinks: true, skipTextLinks: true })
-    // mailparser's own HTML-to-text uppercases headings and draws rules, which reads loud in a list.
-    const fromHtml = parsed.html ? htmlToText(parsed.html) : ''
-    const text = fromHtml.trim() ? fromHtml : (parsed.text ?? '')
-    return text
-      .split('\n')
-      .filter((line) => !/^\s*>/.test(line) && !/^On .+ wrote:\s*$/.test(line.trim()))
-      .join(' ')
-      .replace(/https?:\/\/\S+/g, '')
-      .replace(/[-=_*~]{3,}/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 220)
-  } catch {
-    return ''
+/** The part to preview: the first inline text/plain, else the first inline text/html. */
+function textPart(root: MessageStructureObject): { part: string; html: boolean } | null {
+  let html: string | null = null
+  const walk = (node: MessageStructureObject): string | null => {
+    if (node.disposition === 'attachment') return null
+    const part = node.part ?? '1'
+    if (node.type === 'text/plain') return part
+    if (node.type === 'text/html' && !html) html = part
+    for (const child of node.childNodes ?? []) {
+      const found = walk(child)
+      if (found) return found
+    }
+    return null
   }
+  const plain = walk(root)
+  if (plain) return { part: plain, html: false }
+  return html ? { part: html, html: true } : null
+}
+
+async function readText(stream: NodeJS.ReadableStream): Promise<string> {
+  const chunks: Buffer[] = []
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk as Buffer))
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+function cleanPreview(text: string): string {
+  return text
+    .split('\n')
+    .filter((line) => !/^\s*>/.test(line) && !/^On .+ wrote:\s*$/.test(line.trim()))
+    .join(' ')
+    .replace(/\[(?:image|cid):[^\]]*\]/gi, '')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/[-=_*~]{3,}/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 220)
 }
 
 const ENTITIES: Record<string, string> = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", zwnj: '', shy: '' }
 
 function htmlToText(html: string): string {
   return html
-    // Previews are cut at PREVIEW_BYTES, so a style block or tag can be unclosed; drop those to the end too.
+    // Downloads are capped, so a style block or tag can be unclosed; drop those to the end too.
     .replace(/<(head|style|script|title)\b[\s\S]*?(<\/\1>|$)/gi, ' ')
     .replace(/<!--[\s\S]*?(-->|$)/g, ' ')
     .replace(/<[^>]*$/, ' ')

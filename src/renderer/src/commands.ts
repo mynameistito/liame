@@ -25,8 +25,19 @@ export type CommandId =
   | 'loadImages'
   | 'settings'
   | 'shortcuts'
+  | 'toggleSelect'
+  | 'selectAll'
+  | 'clearSelection'
+  | 'moveTo'
+  | 'labelAs'
+  | 'junk'
+  | 'markAllRead'
+  | 'editDraft'
+  | 'toggleSidebar'
+  | 'toggleList'
   | 'send'
   | 'snippets'
+  | 'saveDraft'
 
 export interface CommandDef {
   id: CommandId
@@ -51,6 +62,14 @@ export const COMMANDS: CommandDef[] = [
   { id: 'undo', title: 'Undo archive or delete', group: 'Message', keys: ['Meta+z'] },
   { id: 'toggleRead', title: 'Mark read / unread', group: 'Message', keys: ['u'] },
   { id: 'toggleFlag', title: 'Flag / unflag', group: 'Message', keys: ['s'] },
+  { id: 'moveTo', title: 'Move to folder…', group: 'Message', keys: ['v'] },
+  { id: 'labelAs', title: 'Label as…', group: 'Message', keys: ['l'] },
+  { id: 'junk', title: 'Mark as junk', group: 'Message', keys: ['Shift+Meta+j'] },
+  { id: 'editDraft', title: 'Edit draft', group: 'Message', keys: ['Enter'] },
+  { id: 'toggleSelect', title: 'Select / deselect message', group: 'Message', keys: ['x'] },
+  { id: 'selectAll', title: 'Select all', group: 'Message', keys: ['Meta+a'] },
+  { id: 'clearSelection', title: 'Clear selection', group: 'Message', keys: ['Escape'] },
+  { id: 'markAllRead', title: 'Mark all as read', group: 'Message', keys: ['Shift+Meta+u'] },
   { id: 'next', title: 'Next message', group: 'Navigate', keys: ['j', 'ArrowDown'] },
   { id: 'previous', title: 'Previous message', group: 'Navigate', keys: ['k', 'ArrowUp'] },
   { id: 'goInbox', title: 'Go to Inbox', group: 'Navigate', keys: ['Meta+1'], global: true },
@@ -60,12 +79,15 @@ export const COMMANDS: CommandDef[] = [
   { id: 'filterFlagged', title: 'Show flagged only', group: 'View', keys: [] },
   { id: 'toggleDarken', title: 'Toggle original email colors', group: 'View', keys: [] },
   { id: 'loadImages', title: 'Load remote images', group: 'View', keys: [] },
+  { id: 'toggleSidebar', title: 'Show / hide sidebar', group: 'View', keys: ['Control+Meta+s'], global: true },
+  { id: 'toggleList', title: 'Show / hide message list', group: 'View', keys: ['Control+Meta+l'], global: true },
   { id: 'assistant', title: 'Toggle assistant', group: 'App', keys: ['Meta+i'], global: true },
   { id: 'refresh', title: 'Check for new mail', group: 'App', keys: ['Shift+Meta+n'], global: true },
   { id: 'settings', title: 'Settings', group: 'App', keys: ['Meta+,'], global: true },
   { id: 'shortcuts', title: 'Keyboard shortcuts', group: 'App', keys: ['?'] },
   { id: 'send', title: 'Send message', group: 'Compose', keys: ['Meta+Enter'], composer: true },
   { id: 'snippets', title: 'Insert snippet', group: 'Compose', keys: ['Meta+j'], composer: true },
+  { id: 'saveDraft', title: 'Save draft', group: 'Compose', keys: ['Meta+s'], composer: true },
 ]
 
 export function keysFor(id: CommandId, overrides: ShortcutOverrides): string[] {
@@ -129,4 +151,13 @@ export function formatCombo(combo: string): string {
 /** True when the key should not fire while typing in a field (no modifier, so it would type text). */
 export function isPlainKey(combo: string): boolean {
   return !/(Meta|Control|Alt)\+/.test(combo)
+}
+
+const ACCELERATOR_KEYS: Record<string, string> = { Meta: 'Command', Control: 'Control', Alt: 'Option', Shift: 'Shift', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', Enter: 'Return', Escape: 'Esc', ' ': 'Space', '+': 'Plus' }
+
+/** A combo in Electron accelerator syntax, for showing shortcuts in native menus. */
+export function toAccelerator(combo: string | undefined): string | undefined {
+  if (!combo) return undefined
+  const parts = combo.split('+')
+  return parts.map((p) => ACCELERATOR_KEYS[p] ?? (p.length === 1 ? p.toUpperCase() : p)).join('+')
 }

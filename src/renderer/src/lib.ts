@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import type { Address, AiTask, ClassifyItem, LiameApi, MessageContext, MessageDetail, MessageSummary } from '../../shared/types'
 
 declare global {
@@ -105,4 +106,62 @@ export function toContext(m: MessageDetail): MessageContext {
 
 export function classifyItem(m: MessageSummary): ClassifyItem {
   return { uid: m.uid, messageId: m.messageId, from: formatAddress(m.from), subject: m.subject, preview: m.preview ?? '' }
+}
+
+/** UI state that should survive restarts (pane widths, collapsed sections). Local to this Mac, so localStorage is enough. */
+export function usePersistent<T>(key: string, initial: T): [T, (next: T | ((prev: T) => T)) => void] {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const raw = localStorage.getItem(`liame.${key}`)
+      return raw === null ? initial : (JSON.parse(raw) as T)
+    } catch {
+      return initial
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem(`liame.${key}`, JSON.stringify(value))
+    } catch {
+      // Losing a pane width is harmless.
+    }
+  }, [key, value])
+  return [value, setValue]
+}
+
+export interface Contact {
+  name: string
+  address: string
+  count: number
+}
+
+const CONTACTS_KEY = 'liame.contacts'
+
+export function loadContacts(): Record<string, Contact> {
+  try {
+    return JSON.parse(localStorage.getItem(CONTACTS_KEY) ?? '{}')
+  } catch {
+    return {}
+  }
+}
+
+/** Remember everyone seen in loaded mail, most frequent first, for To/Cc autocomplete. */
+export function rememberContacts(addresses: Address[], self: string): Record<string, Contact> {
+  const contacts = loadContacts()
+  for (const a of addresses) {
+    const key = a.address.toLowerCase()
+    if (!key || key === self.toLowerCase() || /no-?reply|notifications?@|mailer-daemon/i.test(key)) continue
+    const known = contacts[key]
+    contacts[key] = { address: a.address, name: a.name || known?.name || '', count: (known?.count ?? 0) + 1 }
+  }
+  const trimmed = Object.fromEntries(
+    Object.entries(contacts)
+      .sort((x, y) => y[1].count - x[1].count)
+      .slice(0, 2000),
+  )
+  try {
+    localStorage.setItem(CONTACTS_KEY, JSON.stringify(trimmed))
+  } catch {
+    // Autocomplete is a convenience.
+  }
+  return trimmed
 }

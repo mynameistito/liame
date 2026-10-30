@@ -103,6 +103,7 @@ select {
 /* Layout */
 
 .app {
+  position: relative;
   display: grid;
   grid-template-columns: var(--sidebar) var(--list) 1fr;
   height: 100%;
@@ -187,11 +188,43 @@ kbd {
 }
 
 .nav-label {
-  padding: 14px 10px 6px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 14px 10px 6px 6px;
   font-size: 11px;
   font-weight: 600;
   color: var(--text-3);
   letter-spacing: 0.02em;
+  text-align: left;
+}
+.nav-label:first-child {
+  padding-top: 2px;
+}
+.nav-label:hover {
+  color: var(--text-2);
+}
+.nav-label .chevron,
+.nav-item .fold svg {
+  transition: transform 120ms;
+}
+.nav-label.open .chevron,
+.nav-item .fold.open svg {
+  transform: rotate(90deg);
+}
+.nav-item .fold {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-right: -4px;
+  border-radius: 4px;
+  color: var(--text-3);
+}
+.nav-item .fold:hover {
+  background: var(--selected);
+  color: var(--text);
 }
 
 .nav-item {
@@ -942,17 +975,7 @@ kbd {
 
 /* Labels */
 
-.label-chip {
-  display: inline-block;
-  margin-right: 7px;
-  padding: 0 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 17px;
-  vertical-align: 1px;
-  background: color-mix(in srgb, currentColor 14%, transparent);
-}
+
 
 .label-dot {
   width: 8px;
@@ -999,9 +1022,6 @@ kbd {
 
 /* Assistant */
 
-.app.with-assistant {
-  grid-template-columns: var(--sidebar) var(--list) 1fr 340px;
-}
 
 .assistant {
   border-right: 0;
@@ -1412,9 +1432,6 @@ kbd {
 .reply-bar button {
   white-space: nowrap;
 }
-.app.with-assistant {
-  --list: 330px;
-}
 .app.with-assistant .reader-inner {
   padding: 18px 28px 48px;
 }
@@ -1748,4 +1765,176 @@ kbd {
 .shortcut-keys .reset {
   width: 22px;
   height: 22px;
+}
+
+/* Calm label tags: a dot and quiet text, so labels inform without competing with unread state. */
+.label-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 8px;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-3);
+  vertical-align: 0.5px;
+}
+.label-tag i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  opacity: 0.85;
+}
+.row.unread .label-tag {
+  font-weight: 400;
+  color: var(--text-3);
+}
+.label-select {
+  color: var(--text-3) !important;
+}
+
+/* Picked rows for bulk actions. */
+.row.checked,
+.messages:focus .row.checked {
+  background: var(--accent-soft);
+}
+.row.checked + .row::before,
+.row.checked::before {
+  background: transparent;
+}
+
+/* Resizable and hideable panes. */
+.resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+  z-index: 5;
+}
+.resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: transparent;
+  transition: background 120ms;
+}
+.resizer:hover::after,
+body.resizing .resizer::after {
+  background: var(--accent);
+}
+body.resizing,
+body.resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+/* Keep clear of the traffic lights when the sidebar (or both side panes) are hidden. */
+.no-sidebar .list-titlebar {
+  padding-left: 66px;
+}
+.no-sidebar.no-list .reader .toolbar {
+  padding-left: 80px;
+}
+
+/* Bulk actions. */
+.bulk {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  color: var(--text-2);
+}
+.bulk-count {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+}
+.bulk-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(170px, auto));
+  gap: 8px;
+}
+.bulk-actions button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-strong);
+  color: var(--text-2);
+}
+.bulk-actions button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.bulk-actions kbd,
+.bulk-clear kbd {
+  margin-left: auto;
+  padding-left: 10px;
+}
+.bulk-clear {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.bulk-clear:hover {
+  color: var(--text);
+}
+
+/* Address autocomplete. */
+.address-input {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.address-input input {
+  width: 100%;
+  height: 38px;
+  background: none;
+  border: 0;
+  outline: 0;
+}
+.suggest {
+  position: absolute;
+  top: 36px;
+  left: -8px;
+  width: min(420px, 100%);
+  padding: 4px;
+  border-radius: 10px;
+  background: #141416;
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+  z-index: 3;
+}
+.suggest button {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  text-align: left;
+}
+.suggest button.active {
+  background: var(--selected);
+}
+.suggest small {
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.primary.small {
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+/* Rows are not tab stops; the list shows focus through the selected row instead of a ring. */
+.row:focus-visible {
+  outline: none;
 }

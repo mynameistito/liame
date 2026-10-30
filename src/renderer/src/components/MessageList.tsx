@@ -1,4 +1,4 @@
-import { Flag, Paperclip, Search, X } from 'lucide-react'
+import { Flag, PanelLeft, Paperclip, Search, X } from 'lucide-react'
 import { useEffect, useRef, type Ref, type RefObject } from 'react'
 import type { LabelDef, MessageSummary } from '../../../shared/types'
 import { displayName, shortDate } from '../lib'
@@ -19,7 +19,12 @@ interface Props {
   labels: Map<string, LabelDef>
   onQuery: (query: string) => void
   onFilter: (filter: Filter) => void
-  onSelect: (uid: number) => void
+  /** Click on a row; ⌘ and ⇧ pick messages for bulk actions instead of opening. */
+  onPick: (uid: number, mods: { meta: boolean; shift: boolean }) => void
+  onRowMenu: (uid: number) => void
+  checked: number[]
+  sidebarHidden: boolean
+  onShowSidebar: () => void
   onLoadMore: () => void
   searchRef: RefObject<HTMLInputElement | null>
   listRef: Ref<HTMLDivElement>
@@ -47,6 +52,11 @@ export function MessageList(props: Props) {
     <section className="pane">
       <header className="list-header">
         <div className="list-titlebar drag">
+          {props.sidebarHidden && (
+            <button className="icon-button" title="Show sidebar" onClick={props.onShowSidebar}>
+              <PanelLeft size={15} />
+            </button>
+          )}
           <div className="list-title">
             {title}
             {unread > 0 && <span className="list-subtitle">{unread} unread</span>}
@@ -89,7 +99,16 @@ export function MessageList(props: Props) {
           <div className="list-empty">{query ? 'No results' : filter === 'all' ? 'Nothing here' : `No ${filter} messages`}</div>
         )}
         {messages.map((m) => (
-          <Row key={m.uid} message={m} label={m.label ? props.labels.get(m.label) : undefined} selected={m.uid === selected} showRecipient={showRecipient} onSelect={props.onSelect} />
+          <Row
+            key={m.uid}
+            message={m}
+            label={m.label ? props.labels.get(m.label) : undefined}
+            selected={m.uid === selected}
+            checked={props.checked.includes(m.uid)}
+            showRecipient={showRecipient}
+            onPick={props.onPick}
+            onMenu={props.onRowMenu}
+          />
         ))}
         {hasMore && <div ref={sentinel} className="list-loading">Loading</div>}
       </div>
@@ -97,10 +116,33 @@ export function MessageList(props: Props) {
   )
 }
 
-function Row({ message: m, label, selected, showRecipient, onSelect }: { message: MessageSummary; label?: LabelDef; selected: boolean; showRecipient: boolean; onSelect: (uid: number) => void }) {
+interface RowProps {
+  message: MessageSummary
+  label?: LabelDef
+  selected: boolean
+  checked: boolean
+  showRecipient: boolean
+  onPick: Props['onPick']
+  onMenu: (uid: number) => void
+}
+
+function Row({ message: m, label, selected, checked, showRecipient, onPick, onMenu }: RowProps) {
   const who = showRecipient ? `To: ${m.to.map(displayName).join(', ') || 'No recipients'}` : displayName(m.from)
   return (
-    <button className={`row ${m.seen ? '' : 'unread'} ${selected ? 'selected' : ''}`} onMouseDown={() => onSelect(m.uid)} tabIndex={-1}>
+    <button
+      className={`row ${m.seen ? '' : 'unread'} ${selected ? 'selected' : ''} ${checked ? 'checked' : ''}`}
+      onMouseDown={(e) => {
+        if (e.button !== 0) return
+        // Shift-click would otherwise select text across rows.
+        if (e.shiftKey) e.preventDefault()
+        onPick(m.uid, { meta: e.metaKey, shift: e.shiftKey })
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        onMenu(m.uid)
+      }}
+      tabIndex={-1}
+    >
       {!m.seen && <span className="row-dot" />}
       <div className="row-top">
         <span className="row-from">{who}</span>
@@ -112,7 +154,8 @@ function Row({ message: m, label, selected, showRecipient, onSelect }: { message
       </div>
       <div className="row-subject">
         {label && (
-          <span className="label-chip" style={{ color: label.color }}>
+          <span className="label-tag">
+            <i style={{ background: label.color }} />
             {label.name}
           </span>
         )}

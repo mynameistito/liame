@@ -1,8 +1,9 @@
 import { LoaderCircle, Paperclip, Sparkles, Square, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { Draft, MessageContext, RewriteMode, ShortcutOverrides, Snippet } from '../../../shared/types'
+import { AddressInput } from './AddressInput'
 import { comboOf, formatCombo, isPlainKey, keymap, keysFor } from '../commands'
-import { aiStream, api, errorMessage } from '../lib'
+import { aiStream, api, type Contact, errorMessage } from '../lib'
 
 interface Props {
   initial: Draft
@@ -13,8 +14,10 @@ interface Props {
   autoDraft?: boolean
   snippets: Snippet[]
   shortcuts: ShortcutOverrides
+  contacts: Contact[]
   onClose: () => void
   onSent: () => void
+  onDraftSaved: () => void
 }
 
 const REWRITES: Array<[RewriteMode, string]> = [
@@ -25,7 +28,7 @@ const REWRITES: Array<[RewriteMode, string]> = [
   ['fix', 'Fix spelling'],
 ]
 
-export function Composer({ initial, title, context, autoDraft, snippets, shortcuts, onClose, onSent }: Props) {
+export function Composer({ initial, title, context, autoDraft, snippets, shortcuts, contacts, onClose, onSent, onDraftSaved }: Props) {
   const [draft, setDraft] = useState(initial)
   const [showCc, setShowCc] = useState(Boolean(initial.cc || initial.bcc))
   const [sending, setSending] = useState(false)
@@ -35,6 +38,8 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
   const [selection, setSelection] = useState<[number, number]>([0, 0])
   const [snippetQuery, setSnippetQuery] = useState<string | null>(null)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const [saved, setSaved] = useState(initial)
+  const [savingDraft, setSavingDraft] = useState(false)
   const body = useRef<HTMLTextAreaElement>(null)
   const to = useRef<HTMLInputElement>(null)
   const cancel = useRef<(() => void) | null>(null)
@@ -53,13 +58,54 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
   }, [])
 
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }))
-  const dirty = draft.text !== initial.text || draft.to !== initial.to || draft.subject !== initial.subject
+  const dirty =
+    (['to', 'cc', 'bcc', 'subject', 'text'] as const).some((k) => draft[k] !== saved[k]) ||
+    draft.attachments.length !== saved.attachments.length ||
+    (draft.kept?.length ?? 0) !== (saved.kept?.length ?? 0)
 
   function close() {
     if (writing) cancel.current?.()
     // A native confirm() blocks the whole window in Electron, so ask inline instead.
     if (dirty && !confirmDiscard) return setConfirmDiscard(true)
     onClose()
+  }
+
+  /** Saves to the Drafts folder, replacing the earlier copy. Returns false when saving failed. */
+  async function saveDraft(): Promise<boolean> {
+    if (savingDraft) return false
+    setSavingDraft(true)
+    setError('')
+    const submitted = draft
+    try {
+      const uid = await api.saveDraft(submitted)
+      // The new copy holds every attachment (stored ones first), so they are all "kept" from now on.
+      const stored = uid
+        ? {
+            draftUid: uid,
+            kept: [...(submitted.kept ?? []).map((k) => k.filename), ...submitted.attachments.map((p) => p.split('/').pop() ?? 'attachment')].map((filename, partId) => ({ partId, filename })),
+            attachments: [] as string[],
+          }
+        : { draftUid: undefined }
+      // Only the ids change; text typed while the save was in flight stays.
+      setDraft((current) => ({
+        ...current,
+        ...stored,
+        attachments: uid ? current.attachments.filter((p) => !submitted.attachments.includes(p)) : current.attachments,
+      }))
+      setSaved({ ...submitted, ...stored })
+      onDraftSaved()
+      return true
+    } catch (err) {
+      setError(errorMessage(err))
+      return false
+    } finally {
+      setSavingDraft(false)
+    }
+  }
+
+  async function saveAndClose() {
+    if (await saveDraft()) onClose()
+    else setConfirmDiscard(false)
   }
 
   async function stream(task: Parameters<typeof aiStream>[0], place: (text: string) => string) {
@@ -147,15 +193,21 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
     } else if (command === 'snippets') {
       e.preventDefault()
       setSnippetQuery((q) => (q === null ? '' : null))
+    } else if (command === 'saveDraft') {
+      e.preventDefault()
+      void saveDraft()
     } else if (e.key === 'Escape') {
+      // An open address suggestion list handles its own Escape.
+      if ((e.target as HTMLElement).closest?.('.address-input')?.querySelector('.suggest')) return
       e.preventDefault()
       if (snippetQuery !== null) setSnippetQuery(null)
       else if (writing) cancel.current?.()
       else if (confirmDiscard) setConfirmDiscard(false)
       else close()
     } else if (e.key === 'Enter' && confirmDiscard) {
+      // Enter takes the safe choice.
       e.preventDefault()
-      onClose()
+      void saveAndClose()
     }
   }
   useEffect(() => {
@@ -179,7 +231,7 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
 
         <div className="field">
           <label>To</label>
-          <input ref={to} value={draft.to} onChange={(e) => set({ to: e.target.value })} spellCheck={false} />
+          <AddressInput ref={to} value={draft.to} onChange={(v) => set({ to: v })} contacts={contacts} />
           {!showCc && (
             <button className="link" onClick={() => setShowCc(true)}>
               Cc Bcc
@@ -190,11 +242,11 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
           <>
             <div className="field">
               <label>Cc</label>
-              <input value={draft.cc} onChange={(e) => set({ cc: e.target.value })} spellCheck={false} />
+              <AddressInput value={draft.cc} onChange={(v) => set({ cc: v })} contacts={contacts} />
             </div>
             <div className="field">
               <label>Bcc</label>
-              <input value={draft.bcc} onChange={(e) => set({ bcc: e.target.value })} spellCheck={false} />
+              <AddressInput value={draft.bcc} onChange={(v) => set({ bcc: v })} contacts={contacts} />
             </div>
           </>
         )}
@@ -265,12 +317,26 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
           )}
         </div>
 
-        {draft.attachments.length > 0 && (
+        {(draft.attachments.length > 0 || (draft.kept?.length ?? 0) > 0) && (
           <div className="composer-files">
+            {draft.kept?.map((k) => (
+              <span className="chip" key={`kept-${k.partId}`}>
+                {k.filename}
+                <button
+                  className="icon-button"
+                  style={{ width: 18, height: 18 }}
+                  // Attachment ids are rewritten when a save lands, so hold changes until it does.
+                  disabled={savingDraft}
+                  onClick={() => set({ kept: draft.kept?.filter((x) => x.partId !== k.partId) })}
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
             {draft.attachments.map((path) => (
               <span className="chip" key={path}>
                 {path.split('/').pop()}
-                <button className="icon-button" style={{ width: 18, height: 18 }} onClick={() => set({ attachments: draft.attachments.filter((p) => p !== path) })}>
+                <button className="icon-button" style={{ width: 18, height: 18 }} disabled={savingDraft} onClick={() => set({ attachments: draft.attachments.filter((p) => p !== path) })}>
                   <X size={11} />
                 </button>
               </span>
@@ -280,19 +346,22 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
 
         {confirmDiscard && (
           <div className="discard-bar">
-            <span>Discard this message?</span>
+            <span>Save this message as a draft?</span>
             <span className="spacer" />
             <button className="ghost" onClick={() => setConfirmDiscard(false)}>
               Keep editing
             </button>
-            <button className="ghost danger" autoFocus onClick={onClose}>
+            <button className="ghost danger" onClick={onClose}>
               Discard
+            </button>
+            <button className="primary small" autoFocus onClick={saveAndClose} disabled={savingDraft}>
+              {savingDraft ? 'Saving' : 'Save draft'}
             </button>
           </div>
         )}
 
         <div className="composer-foot">
-          <button className="icon-button" title="Attach files" onClick={attach}>
+          <button className="icon-button" title="Attach files" onClick={attach} disabled={savingDraft}>
             <Paperclip size={15} />
           </button>
           {hasSelection && !writing ? (
@@ -306,7 +375,7 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
           ) : error ? (
             <span className="error">{error}</span>
           ) : (
-            <span className="hint-inline">{writing ? 'Writing…' : `Select text to rewrite · ${formatCombo(keysFor('snippets', shortcuts)[0] ?? '')} snippets`}</span>
+            <span className="hint-inline">{writing ? 'Writing…' : `Select text to rewrite · ${formatCombo(keysFor('snippets', shortcuts)[0] ?? '')} snippets · ${formatCombo(keysFor('saveDraft', shortcuts)[0] ?? '')} save draft`}</span>
           )}
           <span className="spacer" />
           <button className="primary" onClick={send} disabled={sending || writing || !draft.to.trim()}>

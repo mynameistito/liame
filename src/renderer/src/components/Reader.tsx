@@ -6,7 +6,9 @@ import {
   Mail,
   MailOpen,
   Moon,
+  PanelLeft,
   Paperclip,
+  PenLine,
   Reply,
   ReplyAll,
   Sparkles,
@@ -43,14 +45,74 @@ interface Props {
   onTrash: () => void
   onToggleSeen: () => void
   onToggleFlag: () => void
+  listHidden: boolean
+  onShowList: () => void
+  inDrafts: boolean
+  onEditDraft: () => void
+  /** Set when several messages are picked; the reader then shows actions for all of them. */
+  bulk?: BulkActions
 }
 
-export function Reader({ summary, detail, loading, error, mailbox, inTrash, labels, assistantOpen, hint, darken, blockImages, ...actions }: Props) {
+export interface BulkActions {
+  count: number
+  allRead: boolean
+  allFlagged: boolean
+  onArchive: () => void
+  onTrash: () => void
+  onRead: (read: boolean) => void
+  onFlag: (flagged: boolean) => void
+  onMove: () => void
+  onLabel: () => void
+  onClear: () => void
+}
+
+export function Reader({ summary, detail, loading, error, mailbox, inTrash, labels, assistantOpen, hint, darken, blockImages, bulk, ...actions }: Props) {
+  const showList = actions.listHidden && (
+    <ToolButton title={`Show message list  ${hint('toggleList')}`} onClick={actions.onShowList} icon={<PanelLeft size={16} />} />
+  )
+
+  if (bulk) {
+    return (
+      <main className="pane reader">
+        <div className="toolbar drag">{showList}</div>
+        <div className="empty-reader">
+          <div className="bulk">
+            <div className="bulk-count">{bulk.count} messages selected</div>
+            <div className="bulk-actions">
+              <button onClick={bulk.onArchive}>
+                <Archive size={14} /> Archive <kbd>{hint('archive')}</kbd>
+              </button>
+              <button onClick={bulk.onTrash}>
+                <Trash2 size={14} /> {inTrash ? 'Delete' : 'Trash'} <kbd>{hint('trash')}</kbd>
+              </button>
+              <button onClick={() => bulk.onRead(!bulk.allRead)}>
+                {bulk.allRead ? <Mail size={14} /> : <MailOpen size={14} />} Mark {bulk.allRead ? 'unread' : 'read'} <kbd>{hint('toggleRead')}</kbd>
+              </button>
+              <button onClick={() => bulk.onFlag(!bulk.allFlagged)}>
+                <Flag size={14} /> {bulk.allFlagged ? 'Unflag' : 'Flag'} <kbd>{hint('toggleFlag')}</kbd>
+              </button>
+              <button onClick={bulk.onMove}>
+                Move to… <kbd>{hint('moveTo')}</kbd>
+              </button>
+              {labels.length > 0 && (
+                <button onClick={bulk.onLabel}>
+                  Label… <kbd>{hint('labelAs')}</kbd>
+                </button>
+              )}
+            </div>
+            <button className="bulk-clear" onClick={bulk.onClear}>
+              Clear selection <kbd>{hint('clearSelection')}</kbd>
+            </button>
+          </div>
+        </div>
+      </main>
+    )
+  }
 
   if (!summary) {
     return (
       <main className="pane reader">
-        <div className="toolbar drag" />
+        <div className="toolbar drag">{showList}</div>
         <div className="empty-reader">
           <div>
             <Mail size={28} strokeWidth={1.2} />
@@ -67,6 +129,7 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
   return (
     <main className="pane reader">
       <div className="toolbar drag">
+        {showList}
         <ToolButton title={`Reply  ${hint('reply')}`} onClick={() => actions.onReply('reply')} icon={<Reply size={16} />} />
         <ToolButton title={`Reply all  ${hint('replyAll')}`} onClick={() => actions.onReply('all')} icon={<ReplyAll size={16} />} />
         <ToolButton title={`Forward  ${hint('forward')}`} onClick={() => actions.onReply('forward')} icon={<Forward size={16} />} />
@@ -157,7 +220,12 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
 
           {detail && (
             <div className="reply-bar">
-              <button className="ai" onClick={actions.onDraftReply} title={hint('draftReply')}>
+              {actions.inDrafts && (
+                <button className="ai" onClick={actions.onEditDraft} title={hint('editDraft')}>
+                  <PenLine size={14} /> Edit draft
+                </button>
+              )}
+              <button className={actions.inDrafts ? undefined : 'ai'} onClick={actions.onDraftReply} title={hint('draftReply')}>
                 <Sparkles size={14} /> Draft reply
               </button>
               <button onClick={() => actions.onReply('reply')}>
