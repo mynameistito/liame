@@ -119,7 +119,7 @@ jobs:
           elif [ "$draft" = true ]; then
             # An earlier run stopped partway; finish it.
             gh release upload "$tag" "${{ steps.zip.outputs.name }}" --clobber
-            gh release edit "$tag" --draft=false
+            gh release edit "$tag" --draft=false --target "$GITHUB_SHA"
           else
             gh release create "$tag" "${{ steps.zip.outputs.name }}" --title "$tag" --target "$GITHUB_SHA" --generate-notes
           fi
