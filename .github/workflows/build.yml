@@ -120,9 +120,13 @@ jobs:
             # An earlier run stopped partway; finish it.
             gh release upload "$tag" "${{ steps.zip.outputs.name }}" --clobber
             gh release edit "$tag" --draft=false --target "$GITHUB_SHA"
-          elif git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
-            echo "::error::Tag $tag exists without a release; bump the version or remove the tag."
-            exit 1
           else
+            # Exit status 2 means no such tag; anything else (the tag exists, or the lookup failed) stops the release.
+            status=0
+            git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null || status=$?
+            if [ "$status" != 2 ]; then
+              echo "::error::Tag $tag already exists without a release, or the lookup failed (status $status)."
+              exit 1
+            fi
             gh release create "$tag" "${{ steps.zip.outputs.name }}" --title "$tag" --target "$GITHUB_SHA" --generate-notes
           fi
