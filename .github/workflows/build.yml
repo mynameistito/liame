@@ -87,7 +87,7 @@ jobs:
         run: |
           app=dist/mac-arm64/Liame.app
           codesign --verify --deep --strict "$app"
-          signer=$(codesign -dv "$app" 2>&1 | sed -n 's/^Authority=//p' | head -1)
+          signer=$(codesign -dvv "$app" 2>&1 | sed -n 's/^Authority=//p' | head -1)
           echo "Signed by: ${signer:-ad hoc}"
           if [ -n "$LIAME_SIGN_IDENTITY" ] && [ "$signer" != "$LIAME_SIGN_IDENTITY" ]; then
             echo "::error::Expected a signature from $LIAME_SIGN_IDENTITY"
