@@ -1998,3 +1998,16 @@ body.resizing * {
 .setup-field small a {
   color: var(--accent);
 }
+
+/* Search results from other folders say where they live. */
+.folder-tag {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line-strong);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-3);
+  vertical-align: 1px;
+}

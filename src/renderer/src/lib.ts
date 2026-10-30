@@ -13,9 +13,10 @@ export const api = window.liame
 export function mailApi(accountId: string) {
   return {
     listMailboxes: () => api.listMailboxes(accountId),
-    listMessages: (mailbox: string, before?: number) => api.listMessages(accountId, mailbox, before),
-    previews: (mailbox: string, uids: number[]) => api.previews(accountId, mailbox, uids),
+    listMessages: (mailbox: string, offset?: number, limit?: number) => api.listMessages(accountId, mailbox, offset, limit),
+    sync: (mailbox: string) => api.sync(accountId, mailbox),
     search: (mailbox: string, query: string) => api.search(accountId, mailbox, query),
+    searchLocal: (query: string) => api.searchLocal([accountId], query),
     getMessage: (mailbox: string, uid: number) => api.getMessage(accountId, mailbox, uid),
     setFlags: (mailbox: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }) => api.setFlags(accountId, mailbox, uids, flags),
     move: (mailbox: string, uids: number[], target: MoveTarget) => api.move(accountId, mailbox, uids, target),

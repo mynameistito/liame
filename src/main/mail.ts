@@ -7,6 +7,7 @@ import {
   type MessageStructureObject,
 } from 'imapflow'
 import { simpleParser, type AddressObject, type ParsedMail } from 'mailparser'
+import * as store from './store'
 import type {
   AccountConfig,
   Address,
@@ -22,6 +23,10 @@ import type {
 } from '../shared/types'
 
 const PAGE_SIZE = 50
+/** Messages fetched the first time a mailbox syncs; older ones arrive as the list scrolls. */
+const INITIAL_WINDOW = 300
+const OLDER_BATCH = 100
+const PREVIEW_BATCH = 60
 
 const SPECIAL_USE: Record<string, SpecialUse> = {
   '\\Inbox': 'inbox',
@@ -51,8 +56,11 @@ export class MailService {
   private mailboxes: Mailbox[] = []
   /** Highest INBOX UID already reported as new, so notifications only cover arrivals. Null until the watcher connects. */
   private inboxSeenUid: number | null = null
-  private previewCache = new Map<string, string>()
   private parsedCache = new Map<string, ParsedMail>()
+  /** Running syncs by mailbox, so overlapping triggers share one pass. */
+  private syncing = new Map<string, Promise<void>>()
+  /** Message count on the server at the last sync, to know whether older mail is still uncached. */
+  private serverCount = new Map<string, number>()
 
   constructor(
     readonly account: AccountConfig,
@@ -81,7 +89,22 @@ export class MailService {
     await Promise.all(clients.map((c) => c.logout().catch(() => c.close())))
   }
 
+  /**
+   * The server's folder list, cached so the app opens offline. When the server is slow or unreachable the
+   * cached list is returned after a short wait, and a 'mailboxes-changed' event follows once the real one arrives.
+   */
   async listMailboxes(): Promise<Mailbox[]> {
+    const cached = store.loadMailboxList(this.account.id)
+    const fresh = this.fetchMailboxes()
+    if (!cached) return fresh
+    const first = await Promise.race([fresh.catch(() => null), new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500))])
+    if (first) return first
+    fresh.then(() => this.emit({ type: 'mailboxes-changed' })).catch(() => {})
+    if (!this.mailboxes.length) this.mailboxes = cached
+    return cached
+  }
+
+  private async fetchMailboxes(): Promise<Mailbox[]> {
     const client = await this.connection()
     const list = await client.list({ statusQuery: { messages: true, unseen: true } })
     const selectable = list.filter((box) => !box.flags.has('\\Noselect') && !box.flags.has('\\NonExistent'))
@@ -101,39 +124,115 @@ export class MailService {
         }
       })
       .sort((a, b) => rank(a) - rank(b) || a.path.localeCompare(b.path))
+    store.saveMailboxList(this.account.id, this.mailboxes)
     return this.mailboxes
   }
 
-  async listMessages(path: string, before?: number): Promise<MessagePage> {
-    return this.withMailbox(path, async (client) => {
-      // An already-selected mailbox keeps its old EXISTS count until the server speaks again; NOOP asks.
-      await client.noop()
-      const total = client.mailbox ? client.mailbox.exists : 0
-      if (total === 0) return { mailbox: path, total, messages: [], nextBefore: 0 }
-      const end = Math.min(before ?? total, total)
-      const start = Math.max(1, end - PAGE_SIZE + 1)
-      const messages: MessageSummary[] = []
-      for await (const msg of client.fetch(`${start}:${end}`, SUMMARY_QUERY)) messages.push(this.toSummary(path, msg))
-      messages.sort((a, b) => b.uid - a.uid)
-      return { mailbox: path, total, messages, nextBefore: start - 1 }
-    })
+  /** Reads the local copy. A mailbox that never synced waits for its first sync; scrolling past the cache pulls older mail. */
+  async listMessages(path: string, offset = 0, limit = PAGE_SIZE): Promise<MessagePage> {
+    const id = this.account.id
+    if (!store.mailboxState(id, path)) await this.sync(path)
+    let messages = store.listMessages(id, path, offset, limit)
+    if (messages.length < limit && this.hasOlderOnServer(path)) {
+      await this.fetchOlder(path)
+      messages = store.listMessages(id, path, offset, limit)
+    }
+    return { mailbox: path, messages, hasMore: messages.length === limit || this.hasOlderOnServer(path) }
   }
 
-  async previews(path: string, uids: number[]): Promise<Record<number, string>> {
-    const out: Record<number, string> = {}
-    const missing = uids.filter((uid) => {
-      const cached = this.previewCache.get(this.key(path, uid))
-      if (cached !== undefined) out[uid] = cached
-      return cached === undefined
+  /** Brings the cached copy up to date: new mail, flag changes, and messages removed elsewhere. */
+  sync(path: string): Promise<void> {
+    const running = this.syncing.get(path)
+    if (running) return running
+    const pass = this.syncOnce(path).finally(() => this.syncing.delete(path))
+    this.syncing.set(path, pass)
+    return pass
+  }
+
+  private async syncOnce(path: string): Promise<void> {
+    const id = this.account.id
+    await this.withMailbox(path, async (client) => {
+      // An already-selected mailbox keeps its old counts until the server speaks again; NOOP asks.
+      await client.noop()
+      const box = client.mailbox
+      if (!box) return
+      const validity = String(box.uidValidity)
+      const modseq = box.highestModseq ? String(box.highestModseq) : null
+      const state = store.mailboxState(id, path)
+      // A new UIDVALIDITY means every cached UID may now point at a different message.
+      if (state && state.uidvalidity !== validity) store.clearMailbox(id, path)
+      const known = state?.uidvalidity === validity ? state : undefined
+      this.serverCount.set(path, box.exists)
+
+      const range = store.uidRange(id, path)
+      if (box.exists > 0) {
+        const fresh: MessageSummary[] = []
+        if (range.count === 0) {
+          const from = Math.max(1, box.exists - INITIAL_WINDOW + 1)
+          for await (const msg of client.fetch(`${from}:*`, SUMMARY_QUERY)) fresh.push(this.toSummary(path, msg))
+        } else {
+          for await (const msg of client.fetch(`${range.max + 1}:*`, SUMMARY_QUERY, { uid: true })) {
+            // "n:*" always returns the newest message, even when nothing is newer than n.
+            if (msg.uid > range.max) fresh.push(this.toSummary(path, msg))
+          }
+        }
+        store.upsertMessages(fresh)
+      }
+
+      if (range.count > 0) {
+        // Flag changes made elsewhere: only what changed when the server tracks MODSEQ, else every cached flag.
+        const changed: Array<{ uid: number; seen: boolean; flagged: boolean; answered: boolean }> = []
+        const query = { uid: true, flags: true }
+        const options = known?.modseq && modseq ? { uid: true, changedSince: BigInt(known.modseq) } : { uid: true }
+        for await (const msg of client.fetch(`${range.min}:*`, query, options)) {
+          const flags = msg.flags ?? new Set<string>()
+          changed.push({ uid: msg.uid, seen: flags.has('\\Seen'), flagged: flags.has('\\Flagged'), answered: flags.has('\\Answered') })
+        }
+        store.updateFlags(id, path, changed)
+        // Messages deleted or moved elsewhere.
+        const onServer = new Set((await client.search({ uid: `${range.min}:*` }, { uid: true })) || [])
+        store.deleteMessages(
+          id,
+          path,
+          store.cachedUids(id, path).filter((uid) => !onServer.has(uid)),
+        )
+      }
+      store.saveMailboxState(id, path, validity, modseq)
     })
-    if (missing.length === 0) return out
+    this.emit({ type: 'mailbox-synced', mailbox: path })
+    if (await this.fetchPreviews(path)) this.emit({ type: 'mailbox-synced', mailbox: path })
+  }
+
+  private hasOlderOnServer(path: string): boolean {
+    const count = this.serverCount.get(path)
+    return count !== undefined && store.uidRange(this.account.id, path).count < count
+  }
+
+  private async fetchOlder(path: string): Promise<void> {
+    const { min } = store.uidRange(this.account.id, path)
+    if (min <= 1) return
+    await this.withMailbox(path, async (client) => {
+      const uids = ((await client.search({ uid: `1:${min - 1}` }, { uid: true })) || []).sort((a, b) => a - b).slice(-OLDER_BATCH)
+      if (!uids.length) return
+      const older: MessageSummary[] = []
+      for await (const msg of client.fetch(uids, SUMMARY_QUERY, { uid: true })) older.push(this.toSummary(path, msg))
+      store.upsertMessages(older)
+    })
+    void this.fetchPreviews(path).then((added) => added && this.emit({ type: 'mailbox-synced', mailbox: path }))
+  }
+
+  /** Fills in previews for the newest cached messages that lack one. Returns whether any were added. */
+  private async fetchPreviews(path: string): Promise<boolean> {
+    const id = this.account.id
+    const missing = store.missingPreviews(id, path, PREVIEW_BATCH)
+    if (!missing.length) return false
     await this.withMailbox(path, async (client) => {
       // Download only the readable body part, decoded, so long headers and inline CSS cannot crowd out the text.
       const parts: Array<{ uid: number; part: string; html: boolean }> = []
       for await (const msg of client.fetch(missing, { uid: true, bodyStructure: true }, { uid: true })) {
         const found = msg.bodyStructure ? textPart(msg.bodyStructure) : null
         if (found) parts.push({ uid: msg.uid, ...found })
-        else out[msg.uid] = ''
+        else store.setPreview(id, path, msg.uid, '')
       }
       for (const { uid, part, html } of parts) {
         let text = ''
@@ -143,12 +242,10 @@ export class MailService {
         } catch {
           // An unreadable part just leaves the preview empty.
         }
-        const preview = cleanPreview(html ? htmlToText(text) : text)
-        this.previewCache.set(this.key(path, uid), preview)
-        out[uid] = preview
+        store.setPreview(id, path, uid, cleanPreview(html ? htmlToText(text) : text))
       }
     })
-    return out
+    return true
   }
 
   async search(path: string, query: string): Promise<MessageSummary[]> {
@@ -158,10 +255,20 @@ export class MailService {
       const found = await client.search(gmail ? { gmraw: query } : { or: [{ subject: query }, { from: query }, { to: query }, { body: query }] }, { uid: true })
       const uids = (found || []).sort((a, b) => b - a).slice(0, 100)
       if (uids.length === 0) return []
+      // Results are real messages of this mailbox, so they join the local copy (and get previews there).
       const messages: MessageSummary[] = []
       for await (const msg of client.fetch(uids, SUMMARY_QUERY, { uid: true })) messages.push(this.toSummary(path, msg))
-      return messages.sort((a, b) => b.uid - a.uid)
+      store.upsertMessages(messages)
+      return uids
+    }).then(async (uids) => {
+      if (!uids.length) return []
+      await this.fetchPreviews(path)
+      return store.getMessages(this.account.id, path, uids)
     })
+  }
+
+  searchLocal(query: string): MessageSummary[] {
+    return store.search([this.account.id], query)
   }
 
   async getMessage(path: string, uid: number): Promise<MessageDetail> {
@@ -188,6 +295,8 @@ export class MailService {
   }
 
   async setFlags(path: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }): Promise<void> {
+    if (flags.seen !== undefined) store.setFlag(this.account.id, path, uids, 'seen', flags.seen)
+    if (flags.flagged !== undefined) store.setFlag(this.account.id, path, uids, 'flagged', flags.flagged)
     await this.withMailbox(path, async (client) => {
       for (const [flag, on] of [['\\Seen', flags.seen], ['\\Flagged', flags.flagged]] as const) {
         if (on === undefined) continue
@@ -202,10 +311,19 @@ export class MailService {
     const result = await this.withMailbox(path, async (client) => {
       if (destination === path) {
         // Deleting from Trash removes the message for good.
-        if (target === 'trash') await client.messageDelete(uids, { uid: true })
+        if (target === 'trash') {
+          await client.messageDelete(uids, { uid: true })
+          store.deleteMessages(this.account.id, path, uids)
+        }
         return null
       }
       const moved = await client.messageMove(uids, destination, { uid: true })
+      store.moveMessages(
+        this.account.id,
+        path,
+        destination,
+        uids.map((uid) => [uid, moved && moved.uidMap ? moved.uidMap.get(uid) : undefined]),
+      )
       // UIDPLUS tells us the new UIDs; without it the move cannot be undone precisely.
       const newUids = moved && moved.uidMap ? uids.map((uid) => moved.uidMap!.get(uid)).filter((uid): uid is number => uid !== undefined) : []
       return newUids.length === uids.length ? { from: path, to: destination, uids: newUids } : null
@@ -218,6 +336,7 @@ export class MailService {
     await this.withMailbox(path, async (client) => {
       if (client.mailbox && client.mailbox.exists > 0) await client.messageFlagsAdd('1:*', ['\\Seen'])
     })
+    store.setFlag(this.account.id, path, 'all', 'seen', true)
     this.emit({ type: 'mailboxes-changed' })
   }
 
@@ -228,6 +347,7 @@ export class MailService {
     const appended = await client.append(drafts, raw, ['\\Draft', '\\Seen'])
     if (replaceUid) await this.deleteDraft(replaceUid)
     this.emit({ type: 'mailboxes-changed' })
+    void this.sync(drafts)
     return appended ? (appended.uid ?? null) : null
   }
 
@@ -242,6 +362,7 @@ export class MailService {
   async deleteDraft(uid: number): Promise<void> {
     const drafts = await this.pathFor('drafts')
     await this.withMailbox(drafts, (client) => client.messageDelete([uid], { uid: true }))
+    store.deleteMessages(this.account.id, drafts, [uid])
   }
 
   async inboxUnread(): Promise<number> {
@@ -267,8 +388,18 @@ export class MailService {
   }
 
   async undoMove(move: MoveResult): Promise<void> {
-    await this.withMailbox(move.to, (client) => client.messageMove(move.uids, move.from, { uid: true }))
+    await this.withMailbox(move.to, async (client) => {
+      const back = await client.messageMove(move.uids, move.from, { uid: true })
+      store.moveMessages(
+        this.account.id,
+        move.to,
+        move.from,
+        move.uids.map((uid) => [uid, back && back.uidMap ? back.uidMap.get(uid) : undefined]),
+      )
+    })
     this.emit({ type: 'mailboxes-changed' })
+    // Rows without a reported new UID come back with this sync.
+    void this.sync(move.from)
   }
 
   async attachment(path: string, uid: number, partId: number): Promise<{ filename: string; content: Buffer }> {
@@ -300,7 +431,11 @@ export class MailService {
     const env = msg.envelope
     const flags = msg.flags ?? new Set<string>()
     return {
+      key: store.messageKey(this.account.id, path, msg.uid),
+      account: this.account.id,
+      mailbox: path,
       uid: msg.uid,
+      thread: threadKey(msg, path),
       messageId: env?.messageId,
       from: fromEnvelope(env?.from?.[0]) ?? fromEnvelope(env?.sender?.[0]) ?? { name: '', address: '' },
       to: (env?.to ?? []).map((a) => fromEnvelope(a)!).filter(Boolean),
@@ -310,7 +445,6 @@ export class MailService {
       flagged: flags.has('\\Flagged'),
       answered: flags.has('\\Answered'),
       hasAttachments: msg.bodyStructure ? hasAttachment(msg.bodyStructure) : false,
-      preview: this.previewCache.get(this.key(path, msg.uid)),
     }
   }
 
@@ -391,7 +525,19 @@ export class MailService {
   }
 }
 
-const SUMMARY_QUERY = { uid: true, flags: true, envelope: true, internalDate: true, bodyStructure: true }
+// threadId is Gmail's X-GM-THRID (or OBJECTID THREADID); references builds conversations elsewhere.
+const SUMMARY_QUERY = { uid: true, flags: true, envelope: true, internalDate: true, bodyStructure: true, threadId: true, headers: ['references'] }
+
+/**
+ * Messages of one conversation share a key: the server's thread id when it has one, otherwise the first
+ * Message-ID in the reply chain (References, then In-Reply-To), otherwise the message's own Message-ID.
+ */
+function threadKey(msg: FetchMessageObject, path: string): string {
+  if (msg.threadId) return `t:${msg.threadId}`
+  const references = msg.headers?.toString('utf8').match(/<[^<>\s]+>/)?.[0]
+  const root = references ?? msg.envelope?.inReplyTo?.match(/<[^<>\s]+>/)?.[0] ?? msg.envelope?.messageId
+  return root ? `m:${root.toLowerCase()}` : `u:${path}:${msg.uid}`
+}
 
 function createClient(account: Pick<AccountConfig, 'email' | 'password' | 'imap'>, extra: Partial<ImapFlowOptions> = {}): ImapFlow {
   return new ImapFlow({
@@ -401,6 +547,8 @@ function createClient(account: Pick<AccountConfig, 'email' | 'password' | 'imap'
     secure: account.imap.secure,
     auth: { user: account.email, pass: account.password },
     logger: false,
+    // Fail fast when offline instead of imapflow's 90 second default; the cached copy covers the gap.
+    connectionTimeout: 15_000,
   })
 }
 

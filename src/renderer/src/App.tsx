@@ -137,10 +137,11 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([])
   const [current, setCurrent] = useState('')
   const [messages, setMessages] = useState<MessageSummary[]>([])
-  const [nextBefore, setNextBefore] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(false)
   const [listError, setListError] = useState('')
-  const [selected, setSelected] = useState<number | null>(null)
+  /** Key of the open message (see MessageSummary.key). */
+  const [selected, setSelected] = useState<string | null>(null)
   const [detail, setDetail] = useState<MessageDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
@@ -156,11 +157,12 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const [activeLabel, setActiveLabel] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [toast, setToast] = useState<{ text: string; undo?: boolean } | null>(null)
-  const [lastMove, setLastMove] = useState<MoveResult | null>(null)
+  /** One result per folder the last archive/delete touched, for undo. */
+  const [lastMove, setLastMove] = useState<MoveResult[] | null>(null)
   const [darken, setDarken] = useState(true)
-  const [imagesAllowed, setImagesAllowed] = useState<number | null>(null)
+  const [imagesAllowed, setImagesAllowed] = useState<string | null>(null)
   /** Messages picked for a bulk action (⌘-click, ⇧-click, x). Empty means actions apply to the open message. */
-  const [checked, setChecked] = useState<number[]>([])
+  const [checked, setChecked] = useState<string[]>([])
   const [paletteQuery, setPaletteQuery] = useState('')
   const [contacts, setContacts] = useState<Record<string, Contact>>(loadContacts)
   const [sections, setSections] = usePersistent<string[]>('sections', [])
@@ -186,7 +188,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   /** A message to open once its mailbox has loaded (from a notification click). */
   const pendingOpen = useRef<{ path: string; uid: number } | null>(null)
   const focusSearch = useRef(false)
-  const openRef = useRef<(uid: number) => void>(() => {})
+  const openRef = useRef<(key: string) => void>(() => {})
 
   const prefs = settings?.prefs ?? DEFAULT_PREFS
   const prefsRef = useRef(prefs)
@@ -198,6 +200,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const source = results ?? messages
   const labelList = settings?.labels.list ?? []
   const labelMap = useMemo(() => new Map(labelList.map((l) => [l.id, l])), [labelList])
+  const mailboxNames = useMemo(() => new Map(mailboxes.map((b) => [b.path, b.name])), [mailboxes])
   const labelCounts = useMemo(() => {
     const counts: Record<string, number> = {}
     for (const m of messages) if (m.label && !m.seen) counts[m.label] = (counts[m.label] ?? 0) + 1
@@ -208,13 +211,15 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       source.filter((m) => {
         if (activeLabel && m.label !== activeLabel) return false
         // Keep the open message in the Unread view after it gets marked read.
-        if (filter === 'unread') return !m.seen || m.uid === selected
+        if (filter === 'unread') return !m.seen || m.key === selected
         if (filter === 'flagged') return m.flagged
         return true
       }),
     [source, filter, selected, activeLabel],
   )
-  const summary = source.find((m) => m.uid === selected) ?? null
+  const summary = source.find((m) => m.key === selected) ?? null
+  const sourceRef = useRef(source)
+  sourceRef.current = source
 
   const notify = useCallback((text: string, undo = false) => {
     const next = { text, undo }
@@ -222,11 +227,11 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     window.setTimeout(() => setToast((t) => (t === next ? null : t)), undo ? 6000 : 2600)
   }, [])
 
-  const patchMessages = useCallback((uids: number[], patch: (m: MessageSummary) => MessageSummary) => {
-    const apply = (list: MessageSummary[]) => list.map((m) => (uids.includes(m.uid) ? patch(m) : m))
+  const patchMessages = useCallback((keys: string[], patch: (m: MessageSummary) => MessageSummary) => {
+    const apply = (list: MessageSummary[]) => list.map((m) => (keys.includes(m.key) ? patch(m) : m))
     setMessages(apply)
     setResults((r) => r && apply(r))
-    setDetail((d) => (d && uids.includes(d.uid) ? { ...d, ...patch(d) } : d))
+    setDetail((d) => (d && keys.includes(d.key) ? { ...d, ...patch(d) } : d))
   }, [])
 
   const refreshMailboxes = useCallback(async () => {
@@ -239,18 +244,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     }
   }, [])
 
-  const loadPreviews = useCallback(async (path: string, list: MessageSummary[]) => {
-    const missing = list.filter((m) => m.preview === undefined).map((m) => m.uid)
-    for (let i = 0; i < missing.length; i += 25) {
-      const previews = await mail.previews(path, missing.slice(i, i + 25)).catch(() => ({}) as Record<number, string>)
-      if (currentRef.current !== path) return
-      const add = (items: MessageSummary[]) => items.map((m) => (m.uid in previews ? { ...m, preview: previews[m.uid] } : m))
-      setMessages(add)
-      setResults((r) => r && add(r))
-    }
-  }, [])
-
-  /** Reload the newest page and keep anything older that was already scrolled into view. */
+  /** Rereads the local copy, keeping as many rows as are loaded. Labels the renderer already knows survive. */
   const refreshList = useCallback(
     async (path: string, reset: boolean) => {
       if (!path) return
@@ -260,20 +254,17 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       }
       setListError('')
       try {
-        const page = await mail.listMessages(path)
+        const loaded = reset ? 0 : messagesRef.current.length
+        const page = await mail.listMessages(path, 0, Math.max(50, loaded))
         if (currentRef.current !== path) return
         setMessages((old) => {
-          const known = new Map(old.map((m) => [m.uid, m.preview]))
-          const fresh = page.messages.map((m) => ({ ...m, preview: m.preview ?? known.get(m.uid) }))
-          const oldest = fresh.at(-1)?.uid ?? 0
-          // Keep older rows only when this page does not reach the start of the mailbox; otherwise it is the whole list.
-          return reset || page.nextBefore === 0 ? fresh : [...fresh, ...old.filter((m) => m.uid < oldest)]
+          const labels = new Map(old.map((m) => [m.key, m.label]))
+          return page.messages.map((m) => ({ ...m, label: labels.get(m.key) }))
         })
-        if (reset) setNextBefore(page.nextBefore)
-        void loadPreviews(path, page.messages)
+        setHasMore(page.hasMore)
         setContacts(rememberContacts(page.messages.flatMap((m) => [m.from, ...m.to]), account.email))
         if (pendingOpen.current?.path === path) {
-          openRef.current(pendingOpen.current.uid)
+          openRef.current(`${account.id}/${path}/${pendingOpen.current.uid}`)
           pendingOpen.current = null
         }
       } catch (err) {
@@ -282,25 +273,26 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         setLoading(false)
       }
     },
-    [loadPreviews, account.email],
+    [account.email, account.id],
   )
+  const messagesRef = useRef(messages)
+  messagesRef.current = messages
 
   const loadMore = useCallback(async () => {
-    if (!nextBefore || loadingMore.current || results) return
+    if (!hasMore || loadingMore.current || results) return
     loadingMore.current = true
     const path = current
     try {
-      const page = await mail.listMessages(path, nextBefore)
+      const page = await mail.listMessages(path, messagesRef.current.length)
       if (currentRef.current !== path) return
-      setMessages((old) => [...old, ...page.messages.filter((m) => !old.some((o) => o.uid === m.uid))])
-      setNextBefore(page.nextBefore)
-      void loadPreviews(path, page.messages)
+      setMessages((old) => [...old, ...page.messages.filter((m) => !old.some((o) => o.key === m.key))])
+      setHasMore(page.hasMore)
     } catch (err) {
       notify(errorMessage(err))
     } finally {
       loadingMore.current = false
     }
-  }, [current, nextBefore, results, loadPreviews, notify])
+  }, [current, hasMore, results, notify])
 
   // Mailboxes and settings on start, then the selected mailbox whenever it changes.
   useEffect(() => {
@@ -312,43 +304,43 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   // only new messages reach the decision model.
   useEffect(() => {
     if (box?.specialUse !== 'inbox' || !settings) return
-    const pending = messages.filter((m) => m.label === undefined && m.preview !== undefined && !classifying.current.has(`${current}:${m.uid}`))
+    const pending = messages.filter((m) => m.label === undefined && m.preview !== undefined && !classifying.current.has(m.key))
     if (pending.length === 0) return
-    pending.forEach((m) => classifying.current.add(`${current}:${m.uid}`))
+    pending.forEach((m) => classifying.current.add(m.key))
     const path = current
     api
       .classify(pending.map(classifyItem))
       .then((labels) => {
         if (currentRef.current !== path) return
-        const apply = (list: MessageSummary[]) => list.map((m) => (m.uid in labels ? { ...m, label: labels[m.uid] } : m))
+        const apply = (list: MessageSummary[]) => list.map((m) => (m.mailbox === path && m.uid in labels ? { ...m, label: labels[m.uid] } : m))
         setMessages(apply)
         setResults((r) => r && apply(r))
       })
-      .catch(() => pending.forEach((m) => classifying.current.delete(`${path}:${m.uid}`)))
+      .catch(() => pending.forEach((m) => classifying.current.delete(m.key)))
   }, [messages, box?.specialUse, current, settings])
 
+  // A mailbox opens from the local copy at once, then syncs with the server in the background.
   useEffect(() => {
     setSelected(null)
     setChecked([])
     setDetail(null)
     setQuery('')
     setResults(null)
-    void refreshList(current, true)
+    if (!current) return
+    void refreshList(current, true).then(() => mail.sync(current).catch((err) => setListError(errorMessage(err))))
   }, [current, refreshList])
 
-  // Server push from the IDLE connection, plus a refresh whenever the window comes back to front.
+  // Server push and finished syncs update the open list; returning to the window checks the server again.
   // Notifications are shown by the main process for every account.
   useEffect(() => {
     const off = api.onEvent((event) => {
       if (event.accountId !== account.id) return
       if (event.type === 'new-mail' || event.type === 'mailboxes-changed') void refreshMailboxes()
-      if (event.type === 'new-mail' && currentRef.current.toUpperCase() === event.mailbox?.toUpperCase()) {
-        void refreshList(currentRef.current, false)
-      }
+      if (event.type === 'mailbox-synced' && currentRef.current === event.mailbox) void refreshList(currentRef.current, false)
     })
     const onFocus = () => {
       void refreshMailboxes()
-      void refreshList(currentRef.current, false)
+      if (currentRef.current) void mail.sync(currentRef.current).catch(() => {})
     }
     window.addEventListener('focus', onFocus)
     return () => {
@@ -368,13 +360,13 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     setResults(null)
     setChecked([])
     if (openRequest.uid !== undefined) pendingOpen.current = { path: target.path, uid: openRequest.uid }
-    if (currentRef.current === target.path) void refreshList(target.path, false)
+    if (currentRef.current === target.path) void mail.sync(target.path).then(() => refreshList(target.path, false))
     else setCurrent(target.path)
     onOpenHandled()
     // Each request runs once; `at` changes for every new click.
   }, [openRequest?.at, mailboxes.length > 0])
 
-  // Debounced server-side search in the current mailbox.
+  // Search: instant results from the local copy of every folder, then the server's body-text matches in this one.
   useEffect(() => {
     const q = query.trim()
     if (!q) {
@@ -382,23 +374,32 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       return
     }
     const path = current
+    let stale = false
     const timer = window.setTimeout(async () => {
       try {
-        const found = await mail.search(path, q)
-        if (currentRef.current !== path) return
-        setResults(found)
-        void loadPreviews(path, found)
+        const local = await mail.searchLocal(q)
+        if (stale || currentRef.current !== path) return
+        setResults(local)
+        const remote = await mail.search(path, q)
+        if (stale || currentRef.current !== path) return
+        const known = new Set(local.map((m) => m.key))
+        setResults([...local, ...remote.filter((m) => !known.has(m.key))].sort((a, b) => Date.parse(b.date) - Date.parse(a.date)))
       } catch (err) {
         setListError(errorMessage(err))
       }
-    }, 300)
-    return () => window.clearTimeout(timer)
-  }, [query, current, loadPreviews, searchRun])
+    }, 200)
+    return () => {
+      stale = true
+      window.clearTimeout(timer)
+    }
+  }, [query, current, searchRun])
 
   const open = useCallback(
-    async (uid: number) => {
-      setSelected(uid)
-      if (detail?.uid === uid) return
+    async (key: string) => {
+      setSelected(key)
+      if (detail?.key === key) return
+      const target = sourceRef.current.find((m) => m.key === key)
+      if (!target) return
       const request = ++detailRequest.current
       setDetail(null)
       setDetailError('')
@@ -406,7 +407,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       setDarken(prefsRef.current.darkenEmails)
       setImagesAllowed(null)
       try {
-        const message = await mail.getMessage(current, uid)
+        const message = await mail.getMessage(target.mailbox, target.uid)
         if (request !== detailRequest.current) return
         setDetail(message)
         const { markRead } = prefsRef.current
@@ -414,11 +415,11 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
           if (markRead === 'delay') {
             await new Promise((resolve) => window.setTimeout(resolve, 2000))
             // Only count it as read if it is still the open message.
-            if (selectedRef.current !== uid || request !== detailRequest.current) return
+            if (selectedRef.current !== key || request !== detailRequest.current) return
           }
-          patchMessages([uid], (m) => ({ ...m, seen: true }))
-          setMailboxes((boxes) => boxes.map((b) => (b.path === current ? { ...b, unread: Math.max(0, b.unread - 1) } : b)))
-          await mail.setFlags(current, [uid], { seen: true })
+          patchMessages([key], (m) => ({ ...m, seen: true }))
+          setMailboxes((boxes) => boxes.map((b) => (b.path === target.mailbox ? { ...b, unread: Math.max(0, b.unread - 1) } : b)))
+          await mail.setFlags(target.mailbox, [target.uid], { seen: true })
         }
       } catch (err) {
         if (request === detailRequest.current) setDetailError(errorMessage(err))
@@ -426,25 +427,25 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         if (request === detailRequest.current) setDetailLoading(false)
       }
     },
-    [current, detail, patchMessages],
+    [detail, patchMessages],
   )
-  openRef.current = (uid) => void open(uid)
+  openRef.current = (key) => void open(key)
 
   /** What actions apply to: the picked messages, or else the open one. */
   const targets = useMemo(() => (checked.length > 1 ? checked : selected !== null ? [selected] : []), [checked, selected])
 
   /** Click handling for rows: plain opens, ⌘ toggles a pick, ⇧ picks a range from the open message. */
   const pick = useCallback(
-    (uid: number, mods: { meta: boolean; shift: boolean }) => {
+    (key: string, mods: { meta: boolean; shift: boolean }) => {
       if (mods.shift && selected !== null) {
-        const a = visible.findIndex((m) => m.uid === selected)
-        const b = visible.findIndex((m) => m.uid === uid)
-        if (a !== -1 && b !== -1) setChecked(visible.slice(Math.min(a, b), Math.max(a, b) + 1).map((m) => m.uid))
+        const a = visible.findIndex((m) => m.key === selected)
+        const b = visible.findIndex((m) => m.key === key)
+        if (a !== -1 && b !== -1) setChecked(visible.slice(Math.min(a, b), Math.max(a, b) + 1).map((m) => m.key))
         return
       }
       if (mods.meta) {
-        const base = checked.length === 0 && selected !== null && selected !== uid ? [selected] : checked
-        const next = base.includes(uid) ? base.filter((x) => x !== uid) : [...base, uid]
+        const base = checked.length === 0 && selected !== null && selected !== key ? [selected] : checked
+        const next = base.includes(key) ? base.filter((x) => x !== key) : [...base, key]
         // A single remaining pick is just the open message.
         if (next.length === 1) {
           setChecked([])
@@ -453,7 +454,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         return
       }
       setChecked([])
-      void open(uid)
+      void open(key)
     },
     [selected, visible, checked, open],
   )
@@ -461,36 +462,56 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const step = useCallback(
     (delta: number) => {
       if (visible.length === 0) return
-      const index = visible.findIndex((m) => m.uid === selected)
+      const index = visible.findIndex((m) => m.key === selected)
       const next = visible[Math.min(visible.length - 1, Math.max(0, index === -1 ? 0 : index + delta))]
-      if (next) void open(next.uid)
+      if (next) void open(next.key)
     },
     [visible, selected, open],
   )
 
+  /** Groups messages by the folder they live in, since the server acts per folder. */
+  const byMailbox = (keys: string[]) => {
+    const groups = new Map<string, MessageSummary[]>()
+    for (const m of sourceRef.current) {
+      if (!keys.includes(m.key)) continue
+      groups.set(m.mailbox, [...(groups.get(m.mailbox) ?? []), m])
+    }
+    return groups
+  }
+
   const move = useCallback(
-    async (target: MoveTarget, uids: number[] = targets) => {
-      if (uids.length === 0) return
-      const gone = new Set(uids)
+    async (target: MoveTarget, keys: string[] = targets) => {
+      if (keys.length === 0) return
+      const gone = new Set(keys)
+      const groups = byMailbox(keys)
       const { afterMove } = prefsRef.current
       // The neighbour is found among what stays, next to the open message (or the first picked one).
-      const anchor = visible.findIndex((m) => m.uid === (selected !== null && gone.has(selected) ? selected : uids[0]))
-      const after = visible.slice(anchor + 1).find((m) => !gone.has(m.uid))
-      const before = visible.slice(0, Math.max(0, anchor)).reverse().find((m) => !gone.has(m.uid))
+      const anchor = visible.findIndex((m) => m.key === (selected !== null && gone.has(selected) ? selected : keys[0]))
+      const after = visible.slice(anchor + 1).find((m) => !gone.has(m.key))
+      const before = visible.slice(0, Math.max(0, anchor)).reverse().find((m) => !gone.has(m.key))
       const neighbour = afterMove === 'none' ? undefined : afterMove === 'previous' ? (before ?? after) : (after ?? before)
       const openGone = selected === null || gone.has(selected)
-      setMessages((list) => list.filter((m) => !gone.has(m.uid)))
-      setResults((r) => r && r.filter((m) => !gone.has(m.uid)))
+      setMessages((list) => list.filter((m) => !gone.has(m.key)))
+      setResults((r) => r && r.filter((m) => !gone.has(m.key)))
       setChecked([])
       if (openGone) {
         setDetail(null)
-        if (neighbour) void open(neighbour.uid)
+        if (neighbour) void open(neighbour.key)
         else setSelected(null)
       }
       try {
-        const moved = await mail.move(current, uids, target)
-        setLastMove(moved)
-        const permanent = target === 'trash' && box?.specialUse === 'trash'
+        const moved: MoveResult[] = []
+        for (const [mailbox, list] of groups) {
+          const result = await mail.move(
+            mailbox,
+            list.map((m) => m.uid),
+            target,
+          )
+          if (result) moved.push(result)
+        }
+        // Undo only when every folder's move can be reversed exactly.
+        setLastMove(moved.length === groups.size ? moved : null)
+        const permanent = target === 'trash' && [...groups.keys()].every((path) => mailboxes.find((b) => b.path === path)?.specialUse === 'trash')
         const where = typeof target === 'string' ? target : (mailboxes.find((b) => b.path === target.path)?.name ?? target.path)
         const verb = permanent
           ? 'deleted'
@@ -501,61 +522,72 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
               : target === 'junk'
                 ? 'marked as junk'
                 : `moved to ${where}`
-        const text = uids.length > 1 ? `${uids.length} messages ${verb}` : verb.charAt(0).toUpperCase() + verb.slice(1)
-        notify(text, Boolean(moved))
+        const text = keys.length > 1 ? `${keys.length} messages ${verb}` : verb.charAt(0).toUpperCase() + verb.slice(1)
+        notify(text, moved.length === groups.size && moved.length > 0)
       } catch (err) {
         notify(errorMessage(err))
         void refreshList(current, false)
       }
     },
-    [targets, selected, visible, current, box, mailboxes, open, notify, refreshList],
+    [targets, selected, visible, current, mailboxes, open, notify, refreshList],
   )
 
   const undo = useCallback(async () => {
     if (!lastMove) return
-    const move = lastMove
+    const moves = lastMove
     setLastMove(null)
     try {
-      await mail.undoMove(move)
+      for (const move of moves) await mail.undoMove(move)
       notify('Moved back')
-      if (currentRef.current === move.to) {
-        // The moved copy is gone from here; drop it rather than wait for the next refresh.
-        setMessages((list) => list.filter((m) => !move.uids.includes(m.uid)))
-        setResults((r) => r && r.filter((m) => !move.uids.includes(m.uid)))
-        if (selectedRef.current !== null && move.uids.includes(selectedRef.current)) setSelected(null)
-      }
-      if (currentRef.current === move.from) void refreshList(move.from, false)
+      const gone = new Set(moves.flatMap((move) => move.uids.map((uid) => `${account.id}/${move.to}/${uid}`)))
+      // The moved copies are gone from where they went; drop them rather than wait for the next sync.
+      setMessages((list) => list.filter((m) => !gone.has(m.key)))
+      setResults((r) => r && r.filter((m) => !gone.has(m.key)))
+      if (selectedRef.current !== null && gone.has(selectedRef.current)) setSelected(null)
+      if (moves.some((move) => move.from === currentRef.current)) void refreshList(currentRef.current, false)
       setSearchRun((n) => n + 1)
     } catch (err) {
       notify(errorMessage(err))
     }
-  }, [lastMove, notify, refreshList])
+  }, [lastMove, notify, refreshList, account.id])
 
   /** Set a flag on the targets; with no value given, flips it (set unless all already have it). */
   const toggle = useCallback(
-    async (flag: 'seen' | 'flagged', force?: boolean, uids: number[] = targets) => {
-      const list = source.filter((x) => uids.includes(x.uid))
+    async (flag: 'seen' | 'flagged', force?: boolean, keys: string[] = targets) => {
+      const list = source.filter((x) => keys.includes(x.key))
       if (list.length === 0) return
       const value = force ?? !list.every((m) => m[flag])
-      const changed = list.filter((m) => m[flag] !== value).map((m) => m.uid)
+      const changed = list.filter((m) => m[flag] !== value)
       if (changed.length === 0) return
-      patchMessages(changed, (x) => ({ ...x, [flag]: value }))
+      patchMessages(
+        changed.map((m) => m.key),
+        (x) => ({ ...x, [flag]: value }),
+      )
+      const groups = byMailbox(changed.map((m) => m.key))
       if (flag === 'seen') {
-        setMailboxes((boxes) => boxes.map((b) => (b.path === current ? { ...b, unread: Math.max(0, b.unread + (value ? -1 : 1) * changed.length) } : b)))
+        setMailboxes((boxes) =>
+          boxes.map((b) => (groups.has(b.path) ? { ...b, unread: Math.max(0, b.unread + (value ? -1 : 1) * groups.get(b.path)!.length) } : b)),
+        )
       }
       try {
-        await mail.setFlags(current, changed, { [flag]: value })
+        for (const [mailbox, items] of groups) {
+          await mail.setFlags(
+            mailbox,
+            items.map((m) => m.uid),
+            { [flag]: value },
+          )
+        }
       } catch (err) {
         notify(errorMessage(err))
       }
     },
-    [source, targets, current, patchMessages, notify],
+    [source, targets, patchMessages, notify],
   )
 
   const markAllRead = useCallback(async () => {
     const path = current
     patchMessages(
-      [...messages, ...(results ?? [])].filter((m) => !m.seen).map((m) => m.uid),
+      [...messages, ...(results ?? [])].filter((m) => !m.seen && m.mailbox === path).map((m) => m.key),
       (m) => ({ ...m, seen: true }),
     )
     setMailboxes((boxes) => boxes.map((b) => (b.path === path ? { ...b, unread: 0 } : b)))
@@ -585,11 +617,11 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   )
 
   const setLabel = useCallback(
-    (label: string | null, uids: number[] = targets) => {
-      const list = source.filter((x) => uids.includes(x.uid))
+    (label: string | null, keys: string[] = targets) => {
+      const list = source.filter((x) => keys.includes(x.key))
       if (list.length === 0) return
       patchMessages(
-        list.map((m) => m.uid),
+        list.map((m) => m.key),
         (x) => ({ ...x, label }),
       )
       for (const m of list) void api.setLabel(classifyItem(m), label)
@@ -622,7 +654,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   )
 
   const hasTargets = targets.length > 0
-  const hasDetail = detail !== null && detail.uid === selected
+  const hasDetail = detail !== null && detail.key === selected
   const single = checked.length <= 1
   const inDrafts = box?.specialUse === 'drafts'
   const toggleSidebar = () => setLayout((l) => ({ ...l, sidebarHidden: !l.sidebarHidden }))
@@ -648,7 +680,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       run: () => selected !== null && setChecked((list) => (list.includes(selected) ? list.filter((x) => x !== selected) : [...list, selected])),
       enabled: selected !== null,
     },
-    selectAll: { run: () => setChecked(visible.map((m) => m.uid)), enabled: visible.length > 0 },
+    selectAll: { run: () => setChecked(visible.map((m) => m.key)), enabled: visible.length > 0 },
     clearSelection: { run: () => setChecked([]), enabled: checked.length > 0 },
     markAllRead: { run: () => void markAllRead(), enabled: (box?.unread ?? 0) > 0 || messages.some((m) => !m.seen) },
     next: { run: () => (step(1), listRef.current?.focus()) },
@@ -744,25 +776,25 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   ]
 
   /** Native right-click menu for a row; the row joins the selection first if it is not part of it. */
-  const rowMenu = async (uid: number) => {
-    const inSelection = targets.includes(uid)
+  const rowMenu = async (key: string) => {
+    const inSelection = targets.includes(key)
     if (!inSelection) {
       setChecked([])
-      void open(uid)
+      void open(key)
     }
-    const uids = inSelection ? targets : [uid]
-    const list = source.filter((m) => uids.includes(m.uid))
-    const many = uids.length > 1
+    const keys = inSelection ? targets : [key]
+    const list = source.filter((m) => keys.includes(m.key))
+    const many = keys.length > 1
     const acc = (id: CommandId) => toAccelerator(keysFor(id, overrides)[0])
     const items: MenuItemSpec[] = [
       ...(many
-        ? [{ label: `${uids.length} messages selected`, enabled: false }]
+        ? [{ label: `${keys.length} messages selected`, enabled: false }]
         : [
             // Replies need the loaded message, which only the already-open row has.
-            { id: 'reply', label: 'Reply', accelerator: acc('reply'), enabled: hasDetail && detail?.uid === uid },
-            { id: 'replyAll', label: 'Reply All', accelerator: acc('replyAll'), enabled: hasDetail && detail?.uid === uid },
-            { id: 'forward', label: 'Forward', accelerator: acc('forward'), enabled: hasDetail && detail?.uid === uid },
-            { id: 'draftReply', label: 'Draft Reply with AI', accelerator: acc('draftReply'), enabled: hasDetail && detail?.uid === uid },
+            { id: 'reply', label: 'Reply', accelerator: acc('reply'), enabled: hasDetail && detail?.key === key },
+            { id: 'replyAll', label: 'Reply All', accelerator: acc('replyAll'), enabled: hasDetail && detail?.key === key },
+            { id: 'forward', label: 'Forward', accelerator: acc('forward'), enabled: hasDetail && detail?.key === key },
+            { id: 'draftReply', label: 'Draft Reply with AI', accelerator: acc('draftReply'), enabled: hasDetail && detail?.key === key },
           ]),
       { separator: true },
       { id: 'archive', label: 'Archive', accelerator: acc('archive') },
@@ -791,11 +823,11 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     else if (chosen === 'replyAll') reply('all')
     else if (chosen === 'forward') reply('forward')
     else if (chosen === 'draftReply') reply('reply', { autoDraft: true })
-    else if (chosen === 'archive' || chosen === 'trash' || chosen === 'junk') void move(chosen, uids)
-    else if (chosen.startsWith('move:')) void move({ path: chosen.slice(5) }, uids)
-    else if (chosen === 'read') void toggle('seen', undefined, uids)
-    else if (chosen === 'flag') void toggle('flagged', undefined, uids)
-    else if (chosen.startsWith('label:')) setLabel(chosen.slice(6) || null, uids)
+    else if (chosen === 'archive' || chosen === 'trash' || chosen === 'junk') void move(chosen, keys)
+    else if (chosen.startsWith('move:')) void move({ path: chosen.slice(5) }, keys)
+    else if (chosen === 'read') void toggle('seen', undefined, keys)
+    else if (chosen === 'flag') void toggle('flagged', undefined, keys)
+    else if (chosen.startsWith('label:')) setLabel(chosen.slice(6) || null, keys)
   }
 
   // Appearance preferences apply to the whole window.
@@ -894,6 +926,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         searchRef={searchRef}
         title={(activeLabel && labelMap.get(activeLabel)?.name) || box?.name || ''}
         labels={labelMap}
+        mailbox={current}
+        mailboxNames={mailboxNames}
         unread={box?.specialUse === 'inbox' ? box.unread : 0}
         messages={visible}
         selected={selected}
@@ -901,12 +935,12 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         error={listError}
         query={query}
         filter={filter}
-        hasMore={!results && nextBefore > 0}
+        hasMore={!results && hasMore}
         showRecipient={box?.specialUse === 'sent' || box?.specialUse === 'drafts'}
         onQuery={setQuery}
         onFilter={setFilter}
         onPick={pick}
-        onRowMenu={(uid) => void rowMenu(uid)}
+        onRowMenu={(key) => void rowMenu(key)}
         checked={checked}
         sidebarHidden={layout.sidebarHidden}
         onShowSidebar={toggleSidebar}
@@ -915,7 +949,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       )}
       <Reader
         summary={summary}
-        detail={detail?.uid === selected ? detail : null}
+        detail={detail?.key === selected ? detail : null}
         loading={detailLoading}
         error={detailError}
         mailbox={current}
@@ -943,8 +977,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
           checked.length > 1
             ? {
                 count: checked.length,
-                allRead: source.filter((m) => checked.includes(m.uid)).every((m) => m.seen),
-                allFlagged: source.filter((m) => checked.includes(m.uid)).every((m) => m.flagged),
+                allRead: source.filter((m) => checked.includes(m.key)).every((m) => m.seen),
+                allFlagged: source.filter((m) => checked.includes(m.key)).every((m) => m.flagged),
                 onArchive: () => void move('archive'),
                 onTrash: () => void move('trash'),
                 onRead: (read) => void toggle('seen', read),
@@ -958,7 +992,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       />
       {assistantOpen && (
         <Assistant
-          message={detail?.uid === selected ? detail : null}
+          message={detail?.key === selected ? detail : null}
           onClose={() => setAssistantOpen(false)}
           closeHint={hint('assistant')}
           onUseAsReply={(text) => reply('reply', { text })}
@@ -983,7 +1017,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
             setComposer(null)
             notify('Sent')
             if (wasDraft && inDrafts) void refreshList(current, false)
-            else if (detail) patchMessages([detail.uid], (m) => ({ ...m, answered: true }))
+            else if (detail) patchMessages([detail.key], (m) => ({ ...m, answered: true }))
           }}
         />
       )}

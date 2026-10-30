@@ -21,9 +21,12 @@ import { cancelTask, closeAi, listModels, startTask } from './ai'
 import { classify, setLabel } from './labels'
 import { MailService } from './mail'
 import { buildRaw, sendDraft } from './send'
+import * as store from './store'
 import { loadSettings, toPublicSettings, updateSettings } from './settings'
 
 let window: BrowserWindow | null = null
+/** For automated tests: no visible window, no Dock icon, no notifications, so nothing takes focus. */
+const background = process.env.LIAME_BACKGROUND === '1'
 let accounts: AccountConfig[] = []
 const services = new Map<string, MailService>()
 const statuses = new Map<string, ConnectionStatus>()
@@ -71,11 +74,27 @@ function onServiceEvent(accountId: string, event: MailEvent): void {
   send({ ...event, accountId })
   if (event.type === 'connection' && event.status) {
     statuses.set(accountId, event.status)
-    if (event.status === 'online') void refreshUnread(accountId)
+    if (event.status === 'online') {
+      void refreshUnread(accountId)
+      void syncBackground(accountId)
+    }
     send({ type: 'accounts-changed' })
   }
-  if (event.type === 'new-mail' && event.mailbox?.toUpperCase() === 'INBOX') void announce(accountId)
+  if (event.type === 'new-mail' && event.mailbox?.toUpperCase() === 'INBOX') {
+    void announce(accountId)
+    void services.get(accountId)?.sync('INBOX').catch(() => {})
+  }
   if (event.type === 'mailboxes-changed') void refreshUnread(accountId)
+}
+
+/** Keeps the mailboxes conversations draw from (Inbox, Sent, Archive) current even when nobody is looking at them. */
+async function syncBackground(accountId: string): Promise<void> {
+  const svc = services.get(accountId)
+  if (!svc) return
+  const boxes = await svc.listMailboxes().catch(() => [])
+  for (const box of boxes.filter((b) => b.specialUse === 'inbox' || b.specialUse === 'sent' || b.specialUse === 'archive')) {
+    await svc.sync(box.path).catch(() => {})
+  }
 }
 
 async function refreshUnread(accountId: string): Promise<void> {
@@ -96,7 +115,7 @@ async function announce(accountId: string): Promise<void> {
   const fresh = (await services.get(accountId)?.takeNewInbox().catch(() => [])) ?? []
   void refreshUnread(accountId)
   const { prefs } = await loadSettings()
-  if (!fresh.length || !prefs.notifications || window?.isFocused() || !Notification.isSupported()) return
+  if (!fresh.length || !prefs.notifications || background || window?.isFocused() || !Notification.isSupported()) return
   const account = accounts.find((a) => a.id === accountId)
   const show = (title: string, body: string, uid?: number) => {
     const n = new Notification({ title, subtitle: accounts.length > 1 ? account?.email : undefined, body })
@@ -166,10 +185,12 @@ function createWindow(): void {
       sandbox: true,
       contextIsolation: true,
       spellcheck: true,
+      // A hidden window would otherwise pause its timers and animation frames.
+      backgroundThrottling: !background,
     },
   })
 
-  window.once('ready-to-show', () => window?.show())
+  if (!background) window.once('ready-to-show', () => window?.show())
   window.on('close', () => {
     if (window && !window.isFullScreen()) void writeFile(boundsFile(), JSON.stringify(window.getNormalBounds()))
   })
@@ -249,6 +270,7 @@ function registerIpc(): void {
     if (response !== 0) return false
     accounts = accounts.filter((a) => a.id !== id)
     await storeAccounts(accounts)
+    store.removeAccount(id)
     await syncServices()
     return true
   })
@@ -262,9 +284,10 @@ function registerIpc(): void {
     }
     return boxes
   })
-  handle('listMessages', (id: string, path: string, before?: number) => service(id).listMessages(path, before))
-  handle('previews', (id: string, path: string, uids: number[]) => service(id).previews(path, uids))
+  handle('listMessages', (id: string, path: string, offset?: number, limit?: number) => service(id).listMessages(path, offset, limit))
+  handle('sync', (id: string, path: string) => service(id).sync(path))
   handle('search', (id: string, path: string, query: string) => service(id).search(path, query))
+  handle('searchLocal', (ids: string[], query: string) => store.search(ids.filter((id) => services.has(id)), query))
   handle('getMessage', (id: string, path: string, uid: number) => service(id).getMessage(path, uid))
   handle('setFlags', async (id: string, path: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }) => {
     await service(id).setFlags(path, uids, flags)
@@ -361,11 +384,14 @@ app.setName('Liame')
 nativeTheme.themeSource = 'dark'
 
 app.whenReady().then(async () => {
+  if (background) app.dock?.hide()
   buildMenu()
   registerIpc()
   accounts = await loadAccounts()
   await syncServices()
   createWindow()
+  // New mail is pushed over IDLE; this catches changes made elsewhere (other devices, the webmail).
+  setInterval(() => accounts.forEach((a) => void syncBackground(a.id)), 3 * 60_000)
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -378,4 +404,5 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   for (const svc of services.values()) void svc.stop()
   void closeAi()
+  store.closeStore()
 })
