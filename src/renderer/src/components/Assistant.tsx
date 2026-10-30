@@ -25,12 +25,15 @@ export function Assistant({ message, onClose, closeHint, onUseAsReply, briefRequ
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
 
-  // A new message starts a new conversation. Only a real change counts, not React replaying the effect.
+  // A new message starts a new conversation. Only a real change counts, not React replaying the effect, and a chat
+  // holding the daily brief stays: the brief is about all mail, not the open message.
   const shownFor = useRef<string | null>(null)
+  const briefChat = useRef(false)
   useEffect(() => {
     const key = message?.key ?? ''
     if (shownFor.current === key) return
     shownFor.current = key
+    if (briefChat.current) return
     cancel.current?.()
     setTurns([])
     setError('')
@@ -55,6 +58,7 @@ export function Assistant({ message, onClose, closeHint, onUseAsReply, briefRequ
   async function ask(text: string, brief = false) {
     const question = text.trim()
     if (!question || streaming) return
+    if (brief) briefChat.current = true
     const history: ChatTurn[] = [...turns, { role: 'user', text: question }]
     setTurns([...history, { role: 'assistant', text: '' }])
     setInput('')
