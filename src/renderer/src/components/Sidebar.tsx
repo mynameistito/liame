@@ -1,6 +1,7 @@
 import {
   Archive,
   ChevronRight,
+  Clock,
   File,
   Flag,
   Folder,
@@ -50,6 +51,9 @@ interface Props {
   /** All Inboxes, offered when there is more than one account. */
   unified: { active: boolean; unread: number } | null
   onUnified: () => void
+  /** Snoozes, queued sends, and reminders; offered while there are any. `due` counts reminders that went unanswered. */
+  scheduled: { active: boolean; total: number; due: number } | null
+  onScheduled: () => void
   composeHint: string
   onSelect: (path: string) => void
   onCompose: () => void
@@ -107,8 +111,21 @@ export function Sidebar(props: Props) {
             </button>
           )}
           {special.map((box) => (
-            <Item key={box.path} box={box} icon={ICONS[box.specialUse!]} active={box.path === current && !activeLabel && !props.unified?.active} onSelect={props.onSelect} />
+            <Item
+              key={box.path}
+              box={box}
+              icon={ICONS[box.specialUse!]}
+              active={box.path === current && !activeLabel && !props.unified?.active && !props.scheduled?.active}
+              onSelect={props.onSelect}
+            />
           ))}
+          {props.scheduled && (
+            <button className={`nav-item ${props.scheduled.active ? 'active' : ''}`} onClick={props.onScheduled}>
+              <Clock size={15} strokeWidth={1.8} />
+              <span className="name">Scheduled</span>
+              {props.scheduled.due > 0 ? <span className="count unread">{props.scheduled.due}</span> : <span className="count">{props.scheduled.total}</span>}
+            </button>
+          )}
         </Section>
         {labels.length > 0 && (
           <Section title="Labels" open={isOpen('labels')} onToggle={() => onToggleCollapsed('labels')}>

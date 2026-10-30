@@ -29,6 +29,8 @@ export type CommandId =
   | 'selectAll'
   | 'clearSelection'
   | 'moveTo'
+  | 'snooze'
+  | 'remindMe'
   | 'labelAs'
   | 'junk'
   | 'markAllRead'
@@ -64,6 +66,8 @@ export const COMMANDS: CommandDef[] = [
   { id: 'toggleRead', title: 'Mark read / unread', group: 'Message', keys: ['u'] },
   { id: 'toggleFlag', title: 'Flag / unflag', group: 'Message', keys: ['s'] },
   { id: 'moveTo', title: 'Move to folder…', group: 'Message', keys: ['v'] },
+  { id: 'snooze', title: 'Snooze…', group: 'Message', keys: ['b'] },
+  { id: 'remindMe', title: 'Remind me if no reply…', group: 'Message', keys: ['h'] },
   { id: 'labelAs', title: 'Label as…', group: 'Message', keys: ['l'] },
   { id: 'junk', title: 'Mark as junk', group: 'Message', keys: ['Shift+Meta+j'] },
   { id: 'editDraft', title: 'Edit draft', group: 'Message', keys: ['Enter'] },

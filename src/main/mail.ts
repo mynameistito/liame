@@ -361,7 +361,7 @@ export class MailService {
   }
 
   async move(path: string, uids: number[], target: MoveTarget): Promise<MoveResult | null> {
-    const destination = typeof target === 'string' ? await this.pathFor(target) : target.path
+    const destination = typeof target === 'string' ? await this.pathFor(target) : 'path' in target ? target.path : await this.snoozedPath()
     const result = await this.withMailbox(path, async (client) => {
       if (destination === path) {
         // Deleting from Trash removes the message for good.
@@ -384,6 +384,45 @@ export class MailService {
     })
     this.emit({ type: 'mailboxes-changed' })
     return result
+  }
+
+  /**
+   * Moves snoozed messages back to `to` as unread, so they arrive like new mail. They are found by Message-ID,
+   * since their UIDs can change while they wait. Returns false when none are left in `from` (moved by hand).
+   */
+  async returnSnoozed(from: string, messageIds: string[], uids: number[], to: string): Promise<boolean> {
+    const found = await this.withMailbox(from, async (client) => {
+      const hits = new Set<number>()
+      for (const id of messageIds) for (const uid of (await client.search({ header: { 'message-id': id } }, { uid: true })) || []) hits.add(uid)
+      // Messages without a Message-ID can only be found by the UIDs they were snoozed with.
+      if (!messageIds.length && uids.length) for (const uid of (await client.search({ uid: uids.join(',') }, { uid: true })) || []) hits.add(uid)
+      const list = [...hits]
+      if (!list.length) return list
+      await client.messageFlagsRemove(list, ['\\Seen'], { uid: true })
+      await client.messageMove(list, to, { uid: true })
+      store.deleteMessages(this.account.id, from, list)
+      return list
+    })
+    if (!found.length) return false
+    this.emit({ type: 'mailboxes-changed' })
+    void this.sync(to)
+    return true
+  }
+
+  /** The folder snoozed mail waits in, if there is one yet. */
+  async findSnoozed(): Promise<string | undefined> {
+    if (this.mailboxes.length === 0) await this.listMailboxes()
+    return this.mailboxes.find((box) => box.path.toLowerCase() === 'snoozed' || box.name.toLowerCase() === 'snoozed')?.path
+  }
+
+  /** The folder snoozed mail waits in, created on first use. */
+  async snoozedPath(): Promise<string> {
+    const found = await this.findSnoozed()
+    if (found) return found
+    const client = await this.connection()
+    const created = await client.mailboxCreate('Snoozed')
+    await this.listMailboxes()
+    return created.path
   }
 
   async markAllRead(path: string): Promise<void> {

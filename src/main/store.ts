@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import { join } from 'node:path'
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
-import type { Address, Mailbox, MessageSummary } from '../shared/types'
+import type { Address, Draft, Mailbox, MessageSummary, ScheduleKind } from '../shared/types'
 
 /**
  * Local copy of message headers, flags, and previews for every account. Message bodies stay on the
@@ -50,6 +50,31 @@ function open(): DatabaseSync {
       low_uid INTEGER NOT NULL DEFAULT 0,
       high_uid INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (account, mailbox)
+    );
+    -- Snoozes, queued sends, and reply reminders (ScheduledItem). Kind-specific columns are null otherwise.
+    CREATE TABLE IF NOT EXISTS scheduled (
+      id TEXT PRIMARY KEY,
+      account TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      due INTEGER NOT NULL,
+      subject TEXT NOT NULL DEFAULT '',
+      who TEXT NOT NULL DEFAULT '',
+      -- snooze: the messages (JSON arrays) in the Snoozed folder, and the folder they return to.
+      message_ids TEXT,
+      mailbox TEXT,
+      uids TEXT,
+      restore TEXT,
+      -- followup: the message waiting for a reply, its conversation, and who sent it when. A later message
+      -- in the conversation from anyone else counts as the reply.
+      message_id TEXT,
+      thread TEXT,
+      sender TEXT,
+      sent_at INTEGER,
+      fired INTEGER NOT NULL DEFAULT 0,
+      -- send: the Draft as JSON, its attachments copied into the outbox folder; follow_up is a reminder delay in ms.
+      draft TEXT,
+      follow_up INTEGER,
+      error TEXT
     );
     -- Contentless index: rows are found by id, values come from messages.
     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(subject, people, preview, content='', contentless_delete=1);
@@ -226,6 +251,7 @@ export function removeAccount(account: string): void {
   d.prepare('DELETE FROM mailbox_list WHERE account = ?').run(account)
   d.prepare('DELETE FROM messages WHERE account = ?').run(account)
   d.prepare('DELETE FROM mailbox_state WHERE account = ?').run(account)
+  d.prepare('DELETE FROM scheduled WHERE account = ?').run(account)
 }
 
 export interface MailboxState {
@@ -360,4 +386,133 @@ export function search(accounts: string[], query: string, limit = 200): MessageS
     )
     .all(...params) as unknown as Row[]
   return rows.map(toSummary)
+}
+
+export interface Scheduled {
+  id: string
+  account: string
+  kind: ScheduleKind
+  due: number
+  subject: string
+  who: string
+  messageIds?: string[]
+  mailbox?: string
+  uids?: number[]
+  restore?: string
+  messageId?: string
+  thread?: string
+  sender?: string
+  sentAt?: number
+  fired?: boolean
+  draft?: Draft
+  followUp?: number
+  error?: string
+}
+
+interface ScheduledRow {
+  id: string
+  account: string
+  kind: ScheduleKind
+  due: number
+  subject: string
+  who: string
+  message_ids: string | null
+  mailbox: string | null
+  uids: string | null
+  restore: string | null
+  message_id: string | null
+  thread: string | null
+  sender: string | null
+  sent_at: number | null
+  fired: number
+  draft: string | null
+  follow_up: number | null
+  error: string | null
+}
+
+function toScheduled(r: ScheduledRow): Scheduled {
+  return {
+    id: r.id,
+    account: r.account,
+    kind: r.kind,
+    due: r.due,
+    subject: r.subject,
+    who: r.who,
+    messageIds: r.message_ids ? (JSON.parse(r.message_ids) as string[]) : undefined,
+    mailbox: r.mailbox ?? undefined,
+    uids: r.uids ? (JSON.parse(r.uids) as number[]) : undefined,
+    restore: r.restore ?? undefined,
+    messageId: r.message_id ?? undefined,
+    thread: r.thread ?? undefined,
+    sender: r.sender ?? undefined,
+    sentAt: r.sent_at ?? undefined,
+    fired: r.fired === 1,
+    draft: r.draft ? (JSON.parse(r.draft) as Draft) : undefined,
+    followUp: r.follow_up ?? undefined,
+    error: r.error ?? undefined,
+  }
+}
+
+export function addScheduled(item: Scheduled): void {
+  open()
+    .prepare(
+      `INSERT INTO scheduled (id, account, kind, due, subject, who, message_ids, mailbox, uids, restore, message_id, thread, sender, sent_at, fired, draft, follow_up, error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      item.id,
+      item.account,
+      item.kind,
+      item.due,
+      item.subject,
+      item.who,
+      item.messageIds ? JSON.stringify(item.messageIds) : null,
+      item.mailbox ?? null,
+      item.uids ? JSON.stringify(item.uids) : null,
+      item.restore ?? null,
+      item.messageId ?? null,
+      item.thread ?? null,
+      item.sender ?? null,
+      item.sentAt ?? null,
+      item.fired ? 1 : 0,
+      item.draft ? JSON.stringify(item.draft) : null,
+      item.followUp ?? null,
+      item.error ?? null,
+    )
+}
+
+export function listScheduled(): Scheduled[] {
+  return (open().prepare('SELECT * FROM scheduled ORDER BY due').all() as unknown as ScheduledRow[]).map(toScheduled)
+}
+
+export function getScheduled(id: string): Scheduled | undefined {
+  const row = open().prepare('SELECT * FROM scheduled WHERE id = ?').get(id) as ScheduledRow | undefined
+  return row && toScheduled(row)
+}
+
+export function deleteScheduled(id: string): void {
+  open().prepare('DELETE FROM scheduled WHERE id = ?').run(id)
+}
+
+export function updateScheduled(id: string, patch: { due?: number; fired?: boolean; error?: string | null }): void {
+  const d = open()
+  if (patch.due !== undefined) d.prepare('UPDATE scheduled SET due = ? WHERE id = ?').run(patch.due, id)
+  if (patch.fired !== undefined) d.prepare('UPDATE scheduled SET fired = ? WHERE id = ?').run(patch.fired ? 1 : 0, id)
+  if (patch.error !== undefined) d.prepare('UPDATE scheduled SET error = ? WHERE id = ?').run(patch.error, id)
+}
+
+/** Where a message is stored locally, preferring a real folder over Gmail's All Mail copy. */
+export function findMessage(account: string, messageId: string, avoid: string[] = []): MessageSummary | undefined {
+  const rows = open()
+    .prepare('SELECT * FROM messages WHERE account = ? AND lower(message_id) = lower(?) ORDER BY date DESC')
+    .all(account, messageId) as unknown as Row[]
+  const row = rows.find((r) => !avoid.includes(r.mailbox)) ?? rows[0]
+  return row && toSummary(row)
+}
+
+/** Whether anyone other than `sender` wrote in the conversation after `since`. */
+export function hasReply(account: string, thread: string, since: number, sender: string): boolean {
+  return !!open()
+    .prepare('SELECT 1 FROM messages WHERE account = ? AND thread = ? AND date > ? AND lower(from_address) != lower(?) LIMIT 1')
+    .get(account, thread, since, sender)
 }
