@@ -417,15 +417,21 @@ export class MailService {
    */
   async hasReply(messageId: string, earlier: string[], since: number, sender: string): Promise<boolean> {
     const anchor = messageId.toLowerCase()
-    const ids = [messageId, ...earlier.filter((id) => id.toLowerCase() !== anchor)]
-    const refersTo = ids.flatMap((id): SearchObject[] => [{ header: { 'in-reply-to': id } }, { header: { references: id } }])
+    const ids = [...new Map([messageId, ...earlier].map((id) => [id.toLowerCase(), id])).values()]
+    // Long conversations are searched in batches, so the OR stays a reasonable size.
+    const batches: SearchObject[][] = []
+    for (let i = 0; i < ids.length; i += 20) {
+      batches.push(ids.slice(i, i + 20).flatMap((id): SearchObject[] => [{ header: { 'in-reply-to': id } }, { header: { references: id } }]))
+    }
     const boxes = await this.fetchMailboxes()
     const allMail = boxes.find((b) => b.specialUse === 'all')
     const searched = allMail ? [allMail] : boxes.filter((b) => b.specialUse !== 'drafts' && b.specialUse !== 'trash' && b.specialUse !== 'junk')
     for (const box of searched) {
       const answered = await this.withMailbox(box.path, async (client) => {
-        const uids = await client.search({ draft: false, or: refersTo }, { uid: true })
-        if (!uids || !uids.length) return false
+        const hits = new Set<number>()
+        for (const or of batches) for (const uid of (await client.search({ draft: false, or }, { uid: true })) || []) hits.add(uid)
+        const uids = [...hits]
+        if (!uids.length) return false
         let found = false
         // Read every result: leaving the fetch early would leave the connection mid-command.
         for await (const msg of client.fetch(uids, { envelope: true, headers: ['references'] }, { uid: true })) {
