@@ -264,9 +264,11 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         setHasMore(page.hasMore)
         setContacts(rememberContacts(page.messages.flatMap((m) => [m.from, ...m.to]), account.email))
         if (pendingOpen.current?.path === path) {
-          // The new rows are not rendered yet, so hand open() the row itself.
-          const key = `${account.id}/${path}/${pendingOpen.current.uid}`
-          openRef.current(key, page.messages.find((m) => m.key === key))
+          // The new rows are not rendered yet, so hand open() the row itself. A message outside this page
+          // (older, or not cached yet) still opens from its folder and UID.
+          const { uid } = pendingOpen.current
+          const key = `${account.id}/${path}/${uid}`
+          openRef.current(key, page.messages.find((m) => m.key === key) ?? stubRow(account.id, path, uid))
           pendingOpen.current = null
         }
       } catch (err) {
@@ -953,7 +955,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       />
       )}
       <Reader
-        summary={summary}
+        // A message opened from outside the list (a notification for an older message) still shows.
+        summary={summary ?? (detail?.key === selected ? detail : null)}
         detail={detail?.key === selected ? detail : null}
         loading={detailLoading}
         error={detailError}
@@ -1180,6 +1183,25 @@ function Resizer({ at, offset = 0, fromRight, min, max, onResize, onCollapse, on
       title="Drag to resize, double-click to reset"
     />
   )
+}
+
+/** Enough of a summary for open() to fetch a message known only by folder and UID. */
+function stubRow(account: string, mailbox: string, uid: number): MessageSummary {
+  return {
+    key: `${account}/${mailbox}/${uid}`,
+    account,
+    mailbox,
+    uid,
+    from: { name: '', address: '' },
+    to: [],
+    subject: '',
+    date: new Date().toISOString(),
+    // Read-state comes from the fetched message, which open() checks as well.
+    seen: true,
+    flagged: false,
+    answered: false,
+    hasAttachments: false,
+  }
 }
 
 /** Leading blank lines leave room to type above the signature. */

@@ -255,11 +255,15 @@ export class MailService {
     await this.withMailbox(path, async (client) => {
       // Download only the readable body part, decoded, so long headers and inline CSS cannot crowd out the text.
       const parts: Array<{ uid: number; part: string; html: boolean }> = []
+      const returned = new Set<number>()
       for await (const msg of client.fetch(missing, { uid: true, bodyStructure: true }, { uid: true })) {
+        returned.add(msg.uid)
         const found = msg.bodyStructure ? textPart(msg.bodyStructure) : null
         if (found) parts.push({ uid: msg.uid, ...found })
         else store.setPreview(id, path, msg.uid, '')
       }
+      // Messages deleted elsewhere are not returned; give them an empty preview so the batch still makes progress.
+      for (const uid of missing) if (!returned.has(uid)) store.setPreview(id, path, uid, '')
       for (const { uid, part, html } of parts) {
         let text = ''
         try {
