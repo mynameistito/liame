@@ -512,17 +512,20 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         setDetail(message)
         setThread(conversation && conversation.length > 1 ? conversation : null)
         const { markRead } = prefsRef.current
-        // A conversation row is unread when any of its messages here is, even if the newest one was read.
-        if ((!target.seen || !message.seen) && markRead !== 'never') {
+        if (markRead !== 'never') {
           if (markRead === 'delay') {
             await new Promise((resolve) => window.setTimeout(resolve, 2000))
             // Only count it as read if it is still the open message.
             if (selectedRef.current !== key || request !== detailRequest.current) return
           }
-          patchMessages([key], (m) => ({ ...m, seen: true }))
-          if (target.account === account.id)
-            setMailboxes((boxes) => boxes.map((b) => (b.path === target.mailbox ? { ...b, unread: Math.max(0, b.unread - 1) } : b)))
-          // Opening a conversation reads all of it.
+          // A conversation row is unread when any of its messages here is, even if the newest one was read.
+          if (!target.seen || !message.seen) {
+            patchMessages([key], (m) => ({ ...m, seen: true }))
+            if (target.account === account.id)
+              setMailboxes((boxes) => boxes.map((b) => (b.path === target.mailbox ? { ...b, unread: Math.max(0, b.unread - 1) } : b)))
+          }
+          // Opening a conversation reads all of it. Sent even when the local copy already says read: a message
+          // opened from the cache may have been marked unread elsewhere since the last sync.
           await mailFor(target.account).setFlags(target.mailbox, target.threadUids ?? [target.uid], { seen: true })
         }
       } catch (err) {
