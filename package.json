@@ -10,7 +10,7 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "dist": "electron-vite build && electron-builder --mac --arm64"
+    "dist": "electron-vite build && electron-builder --mac --arm64 -c.mac.identity=\"$(sh scripts/sign-identity.sh)\""
   },
   "trustedDependencies": [
     "electron",
