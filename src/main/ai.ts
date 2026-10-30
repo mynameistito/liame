@@ -121,6 +121,14 @@ function quoteMessage(m: MessageContext): string {
   return [`From: ${m.from}`, `To: ${m.to}`, `Date: ${m.date}`, `Subject: ${m.subject}`, '', m.text.slice(0, MAX_BODY)].join('\n')
 }
 
+/** The email, preceded by the rest of its conversation when there is one. */
+function quoteWithConversation(m: MessageContext): string {
+  const email = `<email>\n${quoteMessage(m)}\n</email>`
+  if (!m.conversation?.length) return email
+  const others = m.conversation.map((c) => `<message>\n${quoteMessage(c)}\n</message>`).join('\n')
+  return `<conversation note="the other messages of this thread, oldest first">\n${others}\n</conversation>\n\n${email}`
+}
+
 function buildMessages(task: AiTask): ModelMessage[] {
   switch (task.kind) {
     case 'reply':
@@ -129,12 +137,13 @@ function buildMessages(task: AiTask): ModelMessage[] {
           role: 'user',
           content: [
             'Write my reply to this email.',
+            task.message.conversation?.length
+              ? "The rest of the conversation comes first. Use it so the reply doesn't repeat or contradict what was already said."
+              : '',
             task.instruction ? `What I want to say: ${task.instruction}` : 'Write the reply I would most likely send.',
             task.draft?.trim() ? `Build on what I already started writing:\n${task.draft.trim()}` : '',
             '',
-            '<email>',
-            quoteMessage(task.message),
-            '</email>',
+            quoteWithConversation(task.message),
           ]
             .filter((line) => line !== '')
             .join('\n'),
@@ -147,11 +156,29 @@ function buildMessages(task: AiTask): ModelMessage[] {
           content: `Write a new email body.${task.subject ? ` Subject: ${task.subject}.` : ''}\nWhat it should say: ${task.instruction}`,
         },
       ]
+    case 'brief':
+      return [
+        {
+          role: 'user',
+          content: [
+            `Give me a short brief of my mail. It is now ${new Date().toString()}. Plain text, no headings or bold.`,
+            'Start with what needs a reply or a decision from me, one line each: who, what they need, and any deadline.',
+            'Then one line naming the rest that is worth reading. Skip newsletters, notifications, and receipts unless something in them needs action.',
+            'End with replies I am still waiting for and what is coming up today. Leave that out entirely when there are none.',
+            'If nothing at all needs a reply or decision, say just "Nothing urgent." and stop.',
+            'Keep it under 150 words. Do not invent anything that is not in the list.',
+            '',
+            '<mail>',
+            task.digest || 'No unread mail and nothing scheduled.',
+            '</mail>',
+          ].join('\n'),
+        },
+      ]
     case 'rewrite':
       return [{ role: 'user', content: `${REWRITE[task.mode]}\n\n<text>\n${task.text}\n</text>` }]
     case 'ask': {
       const context = task.message
-        ? `I am looking at this email. Answer questions about it, and when I ask for a reply or draft, write only the draft.\n\n<email>\n${quoteMessage(task.message)}\n</email>`
+        ? `I am looking at this email. Answer questions about it and its conversation, and when I ask for a reply or draft, write only the draft.\n\n${quoteWithConversation(task.message)}`
         : 'Help me with my email.'
       return [
         { role: 'user', content: context },

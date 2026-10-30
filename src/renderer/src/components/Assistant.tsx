@@ -1,6 +1,6 @@
 import { ArrowUp, CornerDownLeft, Sparkles, Square, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { ChatTurn, MessageDetail } from '../../../shared/types'
+import type { AiTask, ChatTurn, MessageDetail } from '../../../shared/types'
 import { aiStream, errorMessage, toContext, useAccount } from '../lib'
 
 const SUGGESTIONS = ['Summarize this', 'What do they want from me?', 'List action items and deadlines', 'Draft a reply', 'Translate to English']
@@ -10,9 +10,12 @@ interface Props {
   onClose: () => void
   closeHint: string
   onUseAsReply: (text: string) => void
+  /** Set when the daily brief is asked for from outside (the command palette); cleared through onBriefStarted. */
+  briefRequest: boolean
+  onBriefStarted: () => void
 }
 
-export function Assistant({ message, onClose, closeHint, onUseAsReply }: Props) {
+export function Assistant({ message, onClose, closeHint, onUseAsReply, briefRequest, onBriefStarted }: Props) {
   const { account } = useAccount()
   const [turns, setTurns] = useState<ChatTurn[]>([])
   const [input, setInput] = useState('')
@@ -34,7 +37,14 @@ export function Assistant({ message, onClose, closeHint, onUseAsReply }: Props) 
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight })
   }, [turns])
 
-  async function ask(text: string) {
+  useEffect(() => {
+    if (!briefRequest) return
+    onBriefStarted()
+    void ask('Daily brief', true)
+  }, [briefRequest])
+
+  /** Asks a question, or with `brief` runs the daily brief, which follow-up questions can then refer to. */
+  async function ask(text: string, brief = false) {
     const question = text.trim()
     if (!question || streaming) return
     const history: ChatTurn[] = [...turns, { role: 'user', text: question }]
@@ -42,9 +52,8 @@ export function Assistant({ message, onClose, closeHint, onUseAsReply }: Props) 
     setInput('')
     setError('')
     setStreaming(true)
-    const run = aiStream(account.id, { kind: 'ask', message: message ? toContext(message) : undefined, history }, (partial) =>
-      setTurns([...history, { role: 'assistant', text: partial }]),
-    )
+    const task: AiTask = brief ? { kind: 'brief' } : { kind: 'ask', message: message ? toContext(message) : undefined, history }
+    const run = aiStream(account.id, task, (partial) => setTurns([...history, { role: 'assistant', text: partial }]))
     cancel.current = run.cancel
     try {
       await run.done
@@ -72,6 +81,7 @@ export function Assistant({ message, onClose, closeHint, onUseAsReply }: Props) 
         {message && <div className="context-chip">About: {message.subject}</div>}
         {turns.length === 0 && (
           <div className="suggestions">
+            <button onClick={() => ask('Daily brief', true)}>Daily brief: what needs me today</button>
             {SUGGESTIONS.filter((s) => message || !/this|them|reply/i.test(s)).map((s) => (
               <button key={s} onClick={() => ask(s)}>
                 {s}
@@ -82,7 +92,7 @@ export function Assistant({ message, onClose, closeHint, onUseAsReply }: Props) 
         {turns.map((turn, i) => (
           <div key={i} className={`turn ${turn.role}`}>
             {turn.text || <span className="typing">Thinking</span>}
-            {turn.role === 'assistant' && turn.text && message && !(streaming && i === turns.length - 1) && (
+            {turn.role === 'assistant' && turn.text && message && turns[i - 1]?.text !== 'Daily brief' && !(streaming && i === turns.length - 1) && (
               <button className="use-reply" onClick={() => onUseAsReply(turn.text)}>
                 <CornerDownLeft size={12} /> Use as reply
               </button>
