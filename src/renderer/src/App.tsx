@@ -12,6 +12,7 @@ import type {
   Prefs,
   AccountSummary,
   PublicSettings,
+  ScheduledItem,
 } from '../../shared/types'
 import { COMMANDS, type CommandId, comboOf, formatCombo, isPlainKey, keymap, keysFor, toAccelerator } from './commands'
 import { Assistant } from './components/Assistant'
@@ -19,9 +20,11 @@ import { Composer } from './components/Composer'
 import { MessageList, type Filter } from './components/MessageList'
 import { Palette, type PaletteItem } from './components/Palette'
 import { Reader, type ReplyMode } from './components/Reader'
+import { ScheduledList } from './components/ScheduledList'
 import { Settings, type SettingsTab } from './components/Settings'
 import { Setup } from './components/Setup'
 import { Sidebar } from './components/Sidebar'
+import { WhenPicker } from './components/WhenPicker'
 import {
   AccountContext,
   api,
@@ -30,6 +33,7 @@ import {
   displayName,
   errorMessage,
   formatAddress,
+  formatWhen,
   loadContacts,
   longDate,
   mailApi,
@@ -41,6 +45,8 @@ import {
 
 /** The merged inbox of every account; not a real mailbox path. */
 const UNIFIED = '\u0000all-inboxes'
+/** Snoozes, queued sends, and reminders of every account; not a real mailbox path either. */
+const SCHEDULED = '\u0000scheduled'
 
 const EMPTY_DRAFT: Draft = { to: '', cc: '', bcc: '', subject: '', text: '', attachments: [] }
 
@@ -175,6 +181,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const [toast, setToast] = useState<{ text: string; undo?: boolean } | null>(null)
   /** One result per folder the last archive/delete touched, for undo. */
   const [lastMove, setLastMove] = useState<MoveResult[] | null>(null)
+  const [scheduled, setScheduled] = useState<ScheduledItem[]>([])
+  const [whenPicker, setWhenPicker] = useState<{ title: string; onPick: (at: number) => void } | null>(null)
   const [darken, setDarken] = useState(true)
   const [imagesAllowed, setImagesAllowed] = useState<string | null>(null)
   /** Messages picked for a bulk action (⌘-click, ⇧-click, x). Empty means actions apply to the open message. */
@@ -277,7 +285,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   )
 
   /** All Inboxes syncs every account's inbox; a folder syncs itself. */
-  const syncView = (path: string) => (path === UNIFIED ? api.syncInboxes() : mail.sync(path))
+  const syncView = (path: string) => (path === SCHEDULED ? Promise.resolve() : path === UNIFIED ? api.syncInboxes() : mail.sync(path))
 
   /** Conversations group every folder but Drafts, where each draft stands alone. */
   const threadedFor = (path: string) => prefsRef.current.conversations && mailboxesRef.current.find((b) => b.path === path)?.specialUse !== 'drafts'
@@ -285,7 +293,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   /** Rereads the local copy, keeping as many rows as are loaded. Labels the renderer already knows survive. */
   const refreshList = useCallback(
     async (path: string, reset: boolean) => {
-      if (!path) return
+      if (!path || path === SCHEDULED) return
       if (reset) {
         setMessages([])
         setLoading(true)
@@ -358,11 +366,14 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     }
   }, [current, hasMore, results, notify])
 
+  const loadScheduled = useCallback(() => void api.listScheduled().then(setScheduled).catch(() => {}), [])
+
   // Mailboxes and settings on start, then the selected mailbox whenever it changes.
   useEffect(() => {
     void refreshMailboxes()
     void api.getSettings().then(setSettings)
-  }, [refreshMailboxes])
+    loadScheduled()
+  }, [refreshMailboxes, loadScheduled])
 
   // Label inbox mail in the background once its preview is known. Stored labels come back instantly;
   // only new messages reach the decision model.
@@ -390,6 +401,11 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     setDetail(null)
     setQuery('')
     setResults(null)
+    if (current === SCHEDULED) {
+      setMessages([])
+      setHasMore(false)
+      return
+    }
     if (!current) return
     void refreshList(current, true).then(() => syncView(current).catch((err) => setListError(errorMessage(err))))
   }, [current, refreshList])
@@ -398,6 +414,9 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   // Notifications are shown by the main process for every account.
   useEffect(() => {
     const off = api.onEvent((event) => {
+      if (event.type === 'scheduled-changed') return void loadScheduled()
+      // Moves and syncs change where snoozed and reminded messages are, and whether a snooze still holds any.
+      if (event.type === 'mailboxes-changed' || event.type === 'mailbox-synced') loadScheduled()
       if (currentRef.current === UNIFIED && event.type === 'mailbox-synced') return void refreshList(UNIFIED, false)
       if (event.accountId !== account.id) {
         if (currentRef.current === UNIFIED && event.type === 'mailboxes-changed' && event.accountId) loadOtherBoxes([event.accountId])
@@ -419,7 +438,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       off()
       window.removeEventListener('focus', onFocus)
     }
-  }, [account.id, refreshMailboxes, refreshList, loadOtherBoxes])
+  }, [account.id, refreshMailboxes, refreshList, loadOtherBoxes, loadScheduled])
 
   // A clicked notification: clear anything that could hide the message, then open it once its mailbox loads.
   useEffect(() => {
@@ -614,11 +633,16 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         }
         // Undo only when every folder's move can be reversed exactly.
         setLastMove(moved.length === groups.length ? moved : null)
+        // Snoozing again from the Snoozed folder leaves the messages where they are.
+        if (typeof target === 'object' && 'snooze' in target) void refreshList(current, false)
         const permanent = target === 'trash' && groups.every((g) => boxesOf(g.account).find((b) => b.path === g.mailbox)?.specialUse === 'trash')
-        const where = typeof target === 'string' ? target : (boxesOf(groups[0].account).find((b) => b.path === target.path)?.name ?? target.path)
+        const where =
+          typeof target === 'string' || !('path' in target) ? '' : (boxesOf(groups[0].account).find((b) => b.path === target.path)?.name ?? target.path)
         const verb = permanent
           ? 'deleted'
-          : target === 'archive'
+          : typeof target === 'object' && 'snooze' in target
+            ? `snoozed until ${formatWhen(target.snooze)}`
+            : target === 'archive'
             ? 'archived'
             : target === 'trash'
               ? 'moved to Trash'
@@ -781,6 +805,36 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const toggleSidebar = () => setLayout((l) => ({ ...l, sidebarHidden: !l.sidebarHidden }))
   const toggleList = () => setLayout((l) => ({ ...l, listHidden: !l.listHidden }))
   const openPalette = (query = '') => (setPaletteQuery(query), setPaletteOpen(true))
+  const snooze = (keys = targets) => setWhenPicker({ title: 'Snooze until', onPick: (at) => void move({ snooze: at }, keys) })
+  function remindMe() {
+    if (!detail) return
+    const { account: id, mailbox, uid } = detail
+    setWhenPicker({
+      title: 'Remind me if no reply by',
+      onPick: (at) =>
+        void mailFor(id)
+          .remind(mailbox, uid, at)
+          .then(() => notify(`Reminder set for ${formatWhen(at)}`))
+          .catch((err) => notify(errorMessage(err))),
+    })
+  }
+  const openScheduled = (item: ScheduledItem) => {
+    if (!item.mailbox || item.uid === undefined) return
+    const row = stubRow(item.account, item.mailbox, item.uid)
+    void open(row.key, row)
+  }
+  async function cancelScheduled(item: ScheduledItem) {
+    try {
+      const result = await api.cancelScheduled(item.id)
+      if (result) {
+        setComposer({ account: result.account, draft: result.draft, title: 'Edit scheduled message' })
+        notify('Moved to Drafts')
+      }
+      else notify(item.kind === 'snooze' ? 'Moved back' : 'Reminder dismissed')
+    } catch (err) {
+      notify(errorMessage(err))
+    }
+  }
   const commands: Record<Exclude<CommandId, 'send' | 'snippets' | 'saveDraft'>, { run: () => void; enabled?: boolean }> = {
     palette: { run: () => openPalette() },
     compose: { run: compose },
@@ -793,6 +847,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     trash: { run: () => void move('trash'), enabled: hasTargets },
     junk: { run: () => void move('junk'), enabled: hasTargets && box?.specialUse !== 'junk' },
     moveTo: { run: () => openPalette('Move to '), enabled: hasTargets && foldersFor(targets).length > 0 },
+    snooze: { run: () => snooze(), enabled: hasTargets },
+    remindMe: { run: remindMe, enabled: hasDetail && single },
     labelAs: { run: () => openPalette('Label as '), enabled: hasTargets && labelList.length > 0 },
     undo: { run: () => void undo(), enabled: lastMove !== null },
     toggleRead: { run: () => void toggle('seen'), enabled: hasTargets },
@@ -847,7 +903,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   // One handler for every rebindable shortcut. Plain keys are ignored while typing in a field.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (composer || settingsTab || paletteOpen) return
+      if (composer || settingsTab || paletteOpen || whenPicker) return
       const combo = comboOf(e)
       const id = combo ? mainKeys.get(combo) : undefined
       if (!combo || !id || id === 'send' || id === 'snippets' || id === 'saveDraft') return
@@ -861,7 +917,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [composer, settingsTab, paletteOpen, mainKeys])
+  }, [composer, settingsTab, paletteOpen, whenPicker, mainKeys])
 
   const paletteItems = (): PaletteItem[] => [
     ...COMMANDS.filter((c) => !c.composer && c.id !== 'palette').map((c) => {
@@ -872,6 +928,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       .filter((a) => a.id !== account.id)
       .map((a) => ({ id: `account:${a.id}`, title: `Switch to ${a.email}`, group: 'Accounts', run: () => onSwitch(a.id) })),
     ...(accounts.length > 1 ? [{ id: 'box:unified', title: 'Go to All Inboxes', group: 'Mailboxes', run: () => (setActiveLabel(null), setCurrent(UNIFIED)) }] : []),
+    ...(scheduled.length ? [{ id: 'box:scheduled', title: 'Go to Scheduled', group: 'Mailboxes', run: () => (setActiveLabel(null), setCurrent(SCHEDULED)) }] : []),
     ...mailboxes.map((b) => ({
       id: `box:${b.path}`,
       title: `Go to ${b.path.toUpperCase() === 'INBOX' ? 'Inbox' : b.path}`,
@@ -924,6 +981,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       { id: 'archive', label: 'Archive', accelerator: acc('archive') },
       { id: 'trash', label: box?.specialUse === 'trash' ? 'Delete Permanently' : 'Move to Trash', accelerator: acc('trash') },
       { id: 'junk', label: 'Mark as Junk', accelerator: acc('junk'), enabled: box?.specialUse !== 'junk' },
+      { id: 'snooze', label: 'Snooze…', accelerator: acc('snooze') },
       { label: 'Move To', enabled: foldersFor(keys).length > 0, submenu: foldersFor(keys).map((b) => ({ id: `move:${b.path}`, label: b.path.toUpperCase() === 'INBOX' ? 'Inbox' : b.path })) },
       { separator: true },
       { id: 'read', label: list.every((m) => m.seen) ? 'Mark as Unread' : 'Mark as Read', accelerator: acc('toggleRead') },
@@ -948,6 +1006,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     else if (chosen === 'forward') reply('forward')
     else if (chosen === 'draftReply') reply('reply', { autoDraft: true })
     else if (chosen === 'archive' || chosen === 'trash' || chosen === 'junk') void move(chosen, keys)
+    else if (chosen === 'snooze') snooze(keys)
     else if (chosen.startsWith('move:')) void move({ path: chosen.slice(5) }, keys)
     else if (chosen === 'read') void toggle('seen', undefined, keys)
     else if (chosen === 'flag') void toggle('flagged', undefined, keys)
@@ -1035,6 +1094,10 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         onSettings={() => setSettingsTab('general')}
         unified={accounts.length > 1 ? { active: current === UNIFIED, unread: accounts.reduce((n, a) => n + a.unread, 0) } : null}
         onUnified={() => (setActiveLabel(null), setCurrent(UNIFIED))}
+        scheduled={
+          scheduled.length ? { active: current === SCHEDULED, total: scheduled.length, due: scheduled.filter((item) => item.fired).length } : null
+        }
+        onScheduled={() => (setActiveLabel(null), setCurrent(SCHEDULED))}
         onHide={toggleSidebar}
         collapsed={sections}
         onToggleCollapsed={(key) => setSections((list) => (list.includes(key) ? list.filter((k) => k !== key) : [...list, key]))}
@@ -1047,7 +1110,18 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         onRefresh={refreshAll}
       />
       )}
-      {fitted.listShown && (
+      {fitted.listShown && current === SCHEDULED && (
+        <ScheduledList
+          items={scheduled}
+          selected={scheduled.find((item) => item.mailbox && stubRow(item.account, item.mailbox, item.uid ?? 0).key === selected)?.id ?? null}
+          accountNames={accounts.length > 1 ? accountNames : undefined}
+          sidebarHidden={layout.sidebarHidden}
+          onShowSidebar={toggleSidebar}
+          onOpen={openScheduled}
+          onCancel={(item) => void cancelScheduled(item)}
+        />
+      )}
+      {fitted.listShown && current !== SCHEDULED && (
       <MessageList
         listRef={listRef}
         searchRef={searchRef}
@@ -1097,6 +1171,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         onReply={reply}
         onArchive={() => void move('archive')}
         onTrash={() => void move('trash')}
+        onSnooze={() => snooze()}
+        onRemind={remindMe}
         onToggleSeen={() => void toggle('seen')}
         onToggleFlag={() => void toggle('flagged')}
         listHidden={!fitted.listShown}
@@ -1149,10 +1225,10 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
             if (box?.specialUse === 'drafts') void refreshList(current, false)
           }}
           onClose={() => setComposer(null)}
-          onSent={() => {
+          onSent={(at) => {
             const wasDraft = composer.draft.draftUid !== undefined
             setComposer(null)
-            notify('Sent')
+            notify(at ? `Scheduled for ${formatWhen(at)}` : 'Sent')
             if (wasDraft && box?.specialUse === 'drafts') void refreshList(current, false)
             else if (detail) patchMessages([detail.key], (m) => ({ ...m, answered: true }))
           }}
@@ -1160,6 +1236,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         </AccountContext.Provider>
       )}
       {paletteOpen && <Palette items={paletteItems()} initialQuery={paletteQuery} onClose={() => setPaletteOpen(false)} />}
+      {whenPicker && <WhenPicker title={whenPicker.title} onPick={whenPicker.onPick} onClose={() => setWhenPicker(null)} />}
       {!layout.sidebarHidden && (
         <Resizer
           at={fitted.sidebar}

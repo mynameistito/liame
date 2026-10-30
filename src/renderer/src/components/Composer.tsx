@@ -1,9 +1,10 @@
-import { LoaderCircle, Paperclip, Sparkles, Square, X } from 'lucide-react'
+import { BellRing, LoaderCircle, Paperclip, Sparkles, Square, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { AiTask, Draft, MessageContext, RewriteMode, ShortcutOverrides, Snippet } from '../../../shared/types'
 import { AddressInput } from './AddressInput'
+import { WhenPicker } from './WhenPicker'
 import { comboOf, formatCombo, isPlainKey, keymap, keysFor } from '../commands'
-import { aiStream, api, type Contact, errorMessage, useAccount } from '../lib'
+import { aiStream, api, type Contact, errorMessage, FOLLOW_UPS, useAccount } from '../lib'
 
 interface Props {
   initial: Draft
@@ -16,7 +17,8 @@ interface Props {
   shortcuts: ShortcutOverrides
   contacts: Contact[]
   onClose: () => void
-  onSent: () => void
+  /** `at` is set when the message was queued to send later. */
+  onSent: (at?: number) => void
   onDraftSaved: () => void
 }
 
@@ -41,6 +43,9 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [saved, setSaved] = useState(initial)
   const [savingDraft, setSavingDraft] = useState(false)
+  /** Remind me when nobody replies within this many ms. */
+  const [followUp, setFollowUp] = useState<number | null>(null)
+  const [pickingTime, setPickingTime] = useState(false)
   const body = useRef<HTMLTextAreaElement>(null)
   const to = useRef<HTMLInputElement>(null)
   const cancel = useRef<(() => void) | null>(null)
@@ -158,17 +163,26 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
     })
   }
 
-  async function send() {
+  async function send(at?: number) {
     if (sending || writing) return
     setSending(true)
     setError('')
     try {
-      await mail.send(draft)
-      onSent()
+      await mail.send(draft, { at, followUp: followUp ?? undefined })
+      onSent(at)
     } catch (err) {
       setError(errorMessage(err))
       setSending(false)
     }
+  }
+
+  async function chooseFollowUp() {
+    const chosen = await api.contextMenu([
+      { id: 'off', label: "Don't remind me", checked: followUp === null },
+      { separator: true },
+      ...FOLLOW_UPS.map((f) => ({ id: String(f.ms), label: `Remind me if no reply ${f.label}`, checked: followUp === f.ms })),
+    ])
+    if (chosen) setFollowUp(chosen === 'off' ? null : Number(chosen))
   }
 
   async function attach() {
@@ -379,13 +393,24 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
             <span className="hint-inline">{writing ? 'Writing…' : `Select text to rewrite · ${formatCombo(keysFor('snippets', shortcuts)[0] ?? '')} snippets · ${formatCombo(keysFor('saveDraft', shortcuts)[0] ?? '')} save draft`}</span>
           )}
           <span className="spacer" />
-          <button className="primary" onClick={send} disabled={sending || writing || !draft.to.trim()}>
+          <button
+            className={`icon-button ${followUp ? 'on' : ''}`}
+            title={followUp ? `Reminder ${FOLLOW_UPS.find((f) => f.ms === followUp)?.label} if nobody replies` : 'Remind me if nobody replies'}
+            onClick={chooseFollowUp}
+          >
+            <BellRing size={15} />
+          </button>
+          <button className="ghost" onClick={() => setPickingTime(true)} disabled={sending || writing || !draft.to.trim()}>
+            Send later
+          </button>
+          <button className="primary" onClick={() => send()} disabled={sending || writing || !draft.to.trim()}>
             {sending && <LoaderCircle size={13} className="spin" />}
             {sending ? 'Sending' : 'Send'}
             {!sending && keysFor('send', shortcuts)[0] && <kbd>{formatCombo(keysFor('send', shortcuts)[0])}</kbd>}
           </button>
         </div>
       </div>
+      {pickingTime && <WhenPicker title="Send at" onPick={(at) => void send(at)} onClose={() => setPickingTime(false)} />}
     </div>
   )
 }

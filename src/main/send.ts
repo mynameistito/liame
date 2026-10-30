@@ -29,9 +29,13 @@ export async function buildRaw(account: AccountConfig, draft: Draft, stored: Sto
   return info.message as Buffer
 }
 
-export async function sendDraft(account: AccountConfig, draft: Draft, stored: StoredAttachment[]): Promise<void> {
-  const to = splitAddresses(draft.to)
-  if (to.length === 0) throw new Error('Add at least one recipient.')
+export function checkRecipients(draft: Draft): void {
+  if (splitAddresses(draft.to).length === 0) throw new Error('Add at least one recipient.')
+}
+
+/** Sends the draft and returns the Message-ID it went out with. */
+export async function sendDraft(account: AccountConfig, draft: Draft, stored: StoredAttachment[]): Promise<string> {
+  checkRecipients(draft)
 
   const transport = createTransport({
     host: account.smtp.host,
@@ -43,7 +47,8 @@ export async function sendDraft(account: AccountConfig, draft: Draft, stored: St
 
   try {
     // Zoho and Gmail both file a copy in Sent on their own, so there is no IMAP append here.
-    await transport.sendMail(mailOptions(account, draft, stored))
+    const info = await transport.sendMail(mailOptions(account, draft, stored))
+    return info.messageId
   } finally {
     transport.close()
   }

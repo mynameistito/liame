@@ -5,6 +5,7 @@ import {
   type MailboxLockObject,
   type MessageAddressObject,
   type MessageStructureObject,
+  type SearchObject,
 } from 'imapflow'
 import { simpleParser, type AddressObject, type ParsedMail } from 'mailparser'
 import * as store from './store'
@@ -361,7 +362,7 @@ export class MailService {
   }
 
   async move(path: string, uids: number[], target: MoveTarget): Promise<MoveResult | null> {
-    const destination = typeof target === 'string' ? await this.pathFor(target) : target.path
+    const destination = typeof target === 'string' ? await this.pathFor(target) : 'path' in target ? target.path : await this.snoozedPath()
     const result = await this.withMailbox(path, async (client) => {
       if (destination === path) {
         // Deleting from Trash removes the message for good.
@@ -384,6 +385,83 @@ export class MailService {
     })
     this.emit({ type: 'mailboxes-changed' })
     return result
+  }
+
+  /**
+   * Moves snoozed messages back to `to` as unread, so they arrive like new mail. They are found by Message-ID,
+   * since their UIDs can change while they wait. Returns false when none are left in `from` (moved by hand).
+   */
+  async returnSnoozed(from: string, messageIds: string[], to: string): Promise<boolean> {
+    const found = await this.withMailbox(from, async (client) => {
+      const hits = new Set<number>()
+      for (const id of messageIds) for (const uid of (await client.search({ header: { 'message-id': id } }, { uid: true })) || []) hits.add(uid)
+      const list = [...hits]
+      if (!list.length) return list
+      await client.messageFlagsRemove(list, ['\\Seen'], { uid: true })
+      await client.messageMove(list, to, { uid: true })
+      store.deleteMessages(this.account.id, from, list)
+      return list
+    })
+    if (!found.length) return false
+    this.emit({ type: 'mailboxes-changed' })
+    void this.sync(to)
+    return true
+  }
+
+  /**
+   * Whether the conversation was answered anywhere on the server after `messageId`: a message that is not a draft,
+   * comes from someone other than `sender`, and refers to it, or refers to an earlier message of the conversation
+   * (`earlier`) and is dated no earlier than `since`. Referring to the message itself proves it came later; Date
+   * headers only have whole seconds, hence the second of slack. Throws while offline, so nothing is decided on
+   * stale data. Gmail's All Mail covers every label; elsewhere each folder but Drafts, Trash, and Junk is searched.
+   */
+  async hasReply(messageId: string, earlier: string[], since: number, sender: string): Promise<boolean> {
+    const anchor = messageId.toLowerCase()
+    const ids = [...new Map([messageId, ...earlier].map((id) => [id.toLowerCase(), id])).values()]
+    // Long conversations are searched in batches, so the OR stays a reasonable size.
+    const batches: SearchObject[][] = []
+    for (let i = 0; i < ids.length; i += 20) {
+      batches.push(ids.slice(i, i + 20).flatMap((id): SearchObject[] => [{ header: { 'in-reply-to': id } }, { header: { references: id } }]))
+    }
+    const boxes = await this.fetchMailboxes()
+    const allMail = boxes.find((b) => b.specialUse === 'all')
+    const searched = allMail ? [allMail] : boxes.filter((b) => b.specialUse !== 'drafts' && b.specialUse !== 'trash' && b.specialUse !== 'junk')
+    for (const box of searched) {
+      const answered = await this.withMailbox(box.path, async (client) => {
+        const hits = new Set<number>()
+        for (const or of batches) for (const uid of (await client.search({ draft: false, or }, { uid: true })) || []) hits.add(uid)
+        const uids = [...hits]
+        if (!uids.length) return false
+        let found = false
+        // Read every result: leaving the fetch early would leave the connection mid-command.
+        for await (const msg of client.fetch(uids, { envelope: true, headers: ['references'] }, { uid: true })) {
+          const from = msg.envelope?.from?.[0]?.address?.toLowerCase()
+          if (!from || from === sender.toLowerCase()) continue
+          const direct = `${msg.envelope?.inReplyTo ?? ''} ${msg.headers?.toString('utf8') ?? ''}`.toLowerCase().includes(anchor)
+          const date = msg.envelope?.date ? new Date(msg.envelope.date).getTime() : 0
+          if (direct || date >= since - 1000) found = true
+        }
+        return found
+      })
+      if (answered) return true
+    }
+    return false
+  }
+
+  /** The folder snoozed mail waits in, if there is one yet. */
+  async findSnoozed(): Promise<string | undefined> {
+    if (this.mailboxes.length === 0) await this.listMailboxes()
+    return this.mailboxes.find((box) => box.path.toLowerCase() === 'snoozed' || box.name.toLowerCase() === 'snoozed')?.path
+  }
+
+  /** The folder snoozed mail waits in, created on first use. */
+  async snoozedPath(): Promise<string> {
+    const found = await this.findSnoozed()
+    if (found) return found
+    const client = await this.connection()
+    const created = await client.mailboxCreate('Snoozed')
+    await this.listMailboxes()
+    return created.path
   }
 
   async markAllRead(path: string): Promise<void> {

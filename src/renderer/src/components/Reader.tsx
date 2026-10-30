@@ -1,5 +1,7 @@
 import {
   Archive,
+  BellRing,
+  Clock,
   Flag,
   Forward,
   LoaderCircle,
@@ -43,6 +45,8 @@ interface Props {
   onReply: (mode: ReplyMode) => void
   onArchive: () => void
   onTrash: () => void
+  onSnooze: () => void
+  onRemind: () => void
   onToggleSeen: () => void
   onToggleFlag: () => void
   listHidden: boolean
@@ -149,6 +153,8 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
         <span className="sep" />
         <ToolButton title={`Archive  ${hint('archive')}`} onClick={actions.onArchive} icon={<Archive size={16} />} />
         <ToolButton title={`${inTrash ? 'Delete permanently' : 'Move to Trash'}  ${hint('trash')}`} onClick={actions.onTrash} icon={<Trash2 size={16} />} />
+        <ToolButton title={`Snooze  ${hint('snooze')}`} onClick={actions.onSnooze} icon={<Clock size={16} />} />
+        <ToolButton title={`Remind me if no reply  ${hint('remindMe')}`} onClick={actions.onRemind} icon={<BellRing size={16} />} />
         <span className="sep" />
         <ToolButton
           title={`${summary.seen ? 'Mark as unread' : 'Mark as read'}  ${hint('toggleRead')}`}

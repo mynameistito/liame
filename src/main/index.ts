@@ -10,16 +10,19 @@ import type {
   ClassifyItem,
   ConnectionStatus,
   Draft,
+  Mailbox,
   MailEvent,
   MenuItemSpec,
   MoveResult,
   MoveTarget,
+  SendOptions,
   SettingsPatch,
 } from '../shared/types'
 import { loadAccounts, storeAccounts, toPublic, upsert } from './account'
 import { cancelTask, closeAi, listModels, startTask } from './ai'
 import { classify, setLabel } from './labels'
 import { MailService } from './mail'
+import { addReminder, addSnooze, cancel, dropSnoozed, listItems, queueSend, remindAfterSend, startScheduler } from './schedule'
 import { buildRaw, sendDraft } from './send'
 import * as store from './store'
 import { loadSettings, toPublicSettings, updateSettings } from './settings'
@@ -92,7 +95,9 @@ async function syncBackground(accountId: string): Promise<void> {
   const svc = services.get(accountId)
   if (!svc) return
   const boxes = await svc.listMailboxes().catch(() => [])
-  for (const box of boxes.filter((b) => b.specialUse === 'inbox' || b.specialUse === 'sent' || b.specialUse === 'archive')) {
+  // Snoozed too, so a message moved out of it elsewhere drops off the Scheduled list.
+  const wanted = (b: Mailbox) => b.specialUse === 'inbox' || b.specialUse === 'sent' || b.specialUse === 'archive' || b.path.toLowerCase() === 'snoozed'
+  for (const box of boxes.filter(wanted)) {
     await svc.sync(box.path).catch(() => {})
   }
 }
@@ -125,6 +130,15 @@ async function announce(accountId: string): Promise<void> {
   const sender = (m: (typeof fresh)[number]) => m.from.name || m.from.address
   if (fresh.length > 3) show(`${fresh.length} new messages`, fresh.slice(0, 3).map(sender).join(', '))
   else for (const m of fresh) show(sender(m), m.subject, m.uid)
+}
+
+/** Reminders and scheduling problems; unlike new mail, these show even while Liame is in front. */
+async function notifyScheduled(title: string, body: string, open?: { accountId: string; mailbox: string; uid: number }): Promise<void> {
+  const { prefs } = await loadSettings()
+  if (!prefs.notifications || background || !Notification.isSupported()) return
+  const n = new Notification({ title, body })
+  if (open) n.on('click', () => openFromNotification({ type: 'open-message', ...open }))
+  n.show()
 }
 
 /** A notification click waiting for a window: macOS keeps the app running after its window closes. */
@@ -315,22 +329,58 @@ function registerIpc(): void {
     // Reading mail changes this account's count in the switcher and the Dock badge.
     if (flags.seen !== undefined) void refreshUnread(id)
   })
-  handle('move', (id: string, path: string, uids: number[], target: MoveTarget) => service(id).move(path, uids, target))
+  handle('move', async (id: string, path: string, uids: number[], target: MoveTarget) => {
+    if (typeof target === 'string' || !('snooze' in target)) return service(id).move(path, uids, target)
+    const svc = service(id)
+    // Snoozed mail is found again by Message-ID, so every message needs one.
+    const rows = store.getMessages(id, path, uids)
+    if (rows.length < uids.length) throw new Error('This folder is still syncing. Try again in a moment.')
+    if (rows.some((m) => !m.messageId)) throw new Error('This message has no Message-ID, so Liame cannot find it again to bring it back.')
+    const snoozed = await svc.snoozedPath()
+    // Snoozing again from Snoozed moves nothing; the messages just get a new time.
+    const result = path === snoozed ? null : await svc.move(path, uids, target)
+    await addSnooze(id, rows, snoozed, path === snoozed ? undefined : path, target.snooze)
+    // Servers without UIDPLUS give no new UIDs; the synced folder shows where the messages are.
+    void svc
+      .sync(snoozed)
+      .catch(() => {})
+      .then(() => send({ type: 'scheduled-changed' }))
+    return result
+  })
   handle('markAllRead', (id: string, path: string) => service(id).markAllRead(path))
   handle('saveDraft', async (id: string, draft: Draft) => {
     return service(id).saveDraft(await buildRaw(accountOf(id), draft, await keptAttachments(id, draft)), draft.draftUid)
   })
-  handle('undoMove', (id: string, move: MoveResult) => service(id).undoMove(move))
+  handle('undoMove', async (id: string, move: MoveResult) => {
+    // Undoing a snooze ends it. (Undoing a move out of Snoozed needs nothing: the snooze is still recorded.)
+    const undoesSnooze = move.to === (await service(id).findSnoozed())
+    const ids = undoesSnooze ? store.getMessages(id, move.to, move.uids).flatMap((m) => m.messageId ?? []) : []
+    await service(id).undoMove(move)
+    if (ids.length) await dropSnoozed(id, ids)
+  })
   handle('saveAttachment', async (id: string, path: string, uid: number, partId: number) => {
     const file = await service(id).attachment(path, uid, partId)
     const result = await dialog.showSaveDialog(window!, { defaultPath: join(app.getPath('downloads'), file.filename) })
     if (!result.canceled && result.filePath) await writeFile(result.filePath, file.content)
   })
-  handle('send', async (id: string, draft: Draft) => {
-    await sendDraft(accountOf(id), draft, await keptAttachments(id, draft))
-    // A sent draft should not linger in Drafts.
+  handle('send', async (id: string, draft: Draft, options: SendOptions = {}) => {
+    const account = accountOf(id)
+    const kept = await keptAttachments(id, draft)
+    if (options.at) await queueSend(account, draft, kept, options.at, options.followUp)
+    else {
+      const messageId = await sendDraft(account, draft, kept)
+      if (options.followUp) remindAfterSend(account, draft, messageId, options.followUp)
+    }
+    // A sent or queued draft should not linger in Drafts.
     if (draft.draftUid) await service(id).deleteDraft(draft.draftUid).catch(() => {})
   })
+  handle('remind', (id: string, path: string, uid: number, due: number) => {
+    const m = store.getMessages(id, path, [uid])[0]
+    if (!m) throw new Error('That message is not available offline yet.')
+    addReminder(id, { messageId: m.messageId, thread: m.thread, subject: m.subject, from: m.from.address, who: m.from.name || m.from.address, date: Date.parse(m.date) }, due)
+  })
+  handle('listScheduled', () => listItems().filter((item) => services.has(item.account)))
+  handle('cancelScheduled', (itemId: string) => cancel(itemId))
   handle('contextMenu', (items: MenuItemSpec[]) => popupMenu(items))
   ipcMain.on('liame:focus', focusWindow)
   handle('pickAttachments', async () => {
@@ -411,6 +461,12 @@ app.whenReady().then(async () => {
   accounts = await loadAccounts()
   await syncServices()
   createWindow()
+  startScheduler({
+    account: (id) => accounts.find((a) => a.id === id),
+    service: (id) => services.get(id),
+    notify: notifyScheduled,
+    changed: () => send({ type: 'scheduled-changed' }),
+  })
   // New mail is pushed over IDLE; this catches changes made elsewhere (other devices, the webmail).
   setInterval(() => accounts.forEach((a) => void syncBackground(a.id)), 3 * 60_000)
   app.on('activate', () => {

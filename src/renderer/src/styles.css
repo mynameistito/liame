@@ -2087,3 +2087,71 @@ body.resizing * {
 .reader-inner > .thread-card:last-of-type {
   margin-bottom: 22px;
 }
+
+/* Time picker (snooze, send later, reminders) */
+
+.palette.when {
+  width: min(380px, calc(100vw - 80px));
+  outline: 0;
+}
+.when-time {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.when-custom {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+}
+.when-custom input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: var(--field);
+  border: 1px solid var(--line);
+  color-scheme: dark;
+}
+
+/* Scheduled list */
+
+.list-section {
+  padding: 12px 16px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-4);
+}
+.scheduled-row {
+  cursor: default;
+}
+.scheduled-row.static {
+  cursor: auto;
+}
+.scheduled-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.scheduled-main .row-subject {
+  flex: 1;
+  min-width: 0;
+}
+.scheduled-main .ghost {
+  flex: none;
+  height: 22px;
+  padding: 0 8px;
+}
+.scheduled-error {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #ff9a9a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

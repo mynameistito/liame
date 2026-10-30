@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import type { Address, AiTask, ClassifyItem, Draft, LiameApi, MessageContext, MessageDetail, MessageSummary, MoveResult, MoveTarget, PublicAccount } from '../../shared/types'
+import type { Address, AiTask, ClassifyItem, Draft, LiameApi, MessageContext, MessageDetail, MessageSummary, MoveResult, MoveTarget, PublicAccount, SendOptions } from '../../shared/types'
 
 declare global {
   interface Window {
@@ -24,7 +24,8 @@ export function mailApi(accountId: string) {
     undoMove: (move: MoveResult) => api.undoMove(accountId, move),
     markAllRead: (mailbox: string) => api.markAllRead(accountId, mailbox),
     saveDraft: (draft: Draft) => api.saveDraft(accountId, draft),
-    send: (draft: Draft) => api.send(accountId, draft),
+    send: (draft: Draft, options?: SendOptions) => api.send(accountId, draft, options),
+    remind: (mailbox: string, uid: number, due: number) => api.remind(accountId, mailbox, uid, due),
     saveAttachment: (mailbox: string, uid: number, partId: number) => api.saveAttachment(accountId, mailbox, uid, partId),
   }
 }
@@ -61,6 +62,41 @@ export function shortDate(iso: string): string {
 export function longDate(iso: string): string {
   return long.format(new Date(iso))
 }
+
+const DAY = 86_400_000
+
+/** A future time, said the way people plan: "Today 15:00", "Tomorrow 8:00", "Sat 8:00", "12 Nov 8:00". */
+export function formatWhen(at: number): string {
+  const date = new Date(at)
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const days = Math.floor((at - startOfToday) / DAY)
+  const day = days === 0 ? 'Today' : days === 1 ? 'Tomorrow' : days > 1 && days < 7 ? weekday.format(date) : dayMonth.format(date)
+  return `${day} ${time.format(date)}`
+}
+
+/** Preset times for snoozing and reminders: later today, tomorrow morning, the weekend, next week. */
+export function laterTimes(now = new Date()): Array<{ label: string; at: number }> {
+  const morning = (inDays: number) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + inDays, 8).getTime()
+  const later = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 3)
+  const weekday = now.getDay()
+  const choices = [
+    // Only while "later" is still this evening.
+    ...(later.getDate() === now.getDate() && later.getHours() <= 21 ? [{ label: 'Later today', at: later.getTime() }] : []),
+    { label: 'Tomorrow', at: morning(1) },
+    // Monday to Thursday; on Friday the weekend is tomorrow.
+    ...(weekday >= 1 && weekday <= 4 ? [{ label: 'This weekend', at: morning(6 - weekday) }] : []),
+    { label: 'Next week', at: morning((8 - weekday) % 7 || 7) },
+  ]
+  return choices.filter((c, i) => choices.findIndex((d) => d.at === c.at) === i)
+}
+
+/** How long to wait for a reply before a reminder. */
+export const FOLLOW_UPS: Array<{ label: string; ms: number }> = [
+  { label: 'in 1 day', ms: DAY },
+  { label: 'in 3 days', ms: 3 * DAY },
+  { label: 'in 1 week', ms: 7 * DAY },
+]
 
 export function displayName(a: Address): string {
   return a.name || a.address.split('@')[0] || 'Unknown'

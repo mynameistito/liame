@@ -109,7 +109,35 @@ export interface Draft {
   kept?: Array<{ partId: number; filename: string }>
 }
 
-export type MoveTarget = SpecialUse | { path: string }
+/** A snooze moves messages to the Snoozed folder until `snooze` (ms since epoch), then back to where they were. */
+export type MoveTarget = SpecialUse | { path: string } | { snooze: number }
+
+export type ScheduleKind = 'snooze' | 'send' | 'followup'
+
+/** Something Liame does later: return a snoozed message, send a message, or remind about one without a reply. */
+export interface ScheduledItem {
+  id: string
+  account: string
+  kind: ScheduleKind
+  /** When it runs, in ms since epoch. */
+  due: number
+  subject: string
+  /** The sender of a snoozed or reminded message, or the recipients of a send. */
+  who: string
+  /** Where the message is now, for opening it; absent for sends and messages not found locally. */
+  mailbox?: string
+  uid?: number
+  /** A reminder that came due with no reply. It stays listed until dismissed or answered. */
+  fired?: boolean
+  /** Why the last send attempt failed; it is retried. */
+  error?: string
+}
+
+/** Options for sending: later instead of now, and a reminder when nobody replies within `followUp` ms. */
+export interface SendOptions {
+  at?: number
+  followUp?: number
+}
 
 /** A native context-menu entry. `id` comes back when the item is chosen. */
 export interface MenuItemSpec {
@@ -123,7 +151,7 @@ export interface MenuItemSpec {
 }
 
 export interface MailEvent {
-  type: 'new-mail' | 'mailboxes-changed' | 'mailbox-synced' | 'connection' | 'accounts-changed' | 'open-message'
+  type: 'new-mail' | 'mailboxes-changed' | 'mailbox-synced' | 'connection' | 'accounts-changed' | 'open-message' | 'scheduled-changed'
   accountId?: string
   mailbox?: string
   status?: ConnectionStatus
@@ -268,7 +296,13 @@ export interface LiameApi {
   saveDraft(accountId: string, draft: Draft): Promise<number | null>
   undoMove(accountId: string, move: MoveResult): Promise<void>
   saveAttachment(accountId: string, mailbox: string, uid: number, partId: number): Promise<void>
-  send(accountId: string, draft: Draft): Promise<void>
+  /** Sends now, or queues the message when `options.at` is set. */
+  send(accountId: string, draft: Draft, options?: SendOptions): Promise<void>
+  /** Reminds about a message at `due` unless someone replies first. */
+  remind(accountId: string, mailbox: string, uid: number, due: number): Promise<void>
+  listScheduled(): Promise<ScheduledItem[]>
+  /** Snoozes return now, reminders are dismissed, and a queued send comes back as a draft for the composer. */
+  cancelScheduled(id: string): Promise<{ account: string; draft: Draft } | null>
   contextMenu(items: MenuItemSpec[]): Promise<string | null>
   focusWindow(): void
   setZoom(factor: number): void
