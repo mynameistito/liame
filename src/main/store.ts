@@ -4,8 +4,8 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import type { Address, Draft, Mailbox, MessageSummary, ScheduleKind } from '../shared/types'
 
 /**
- * Local copy of message headers, flags, and previews for every account. Message bodies stay on the
- * server. Lists and search read from here, so they are instant and work while offline.
+ * Local copy of message headers, flags, and previews for every account, plus the raw source of recent
+ * messages so they open instantly. Lists and search read from here, so they are instant and work while offline.
  */
 let db: DatabaseSync | null = null
 
@@ -75,6 +75,18 @@ function open(): DatabaseSync {
       follow_up INTEGER,
       error TEXT
     );
+    -- Raw source of recently opened or prefetched messages, by messages.id. The Message-ID is kept so a row id
+    -- reused by another message can never return the wrong body.
+    CREATE TABLE IF NOT EXISTS bodies (
+      id INTEGER PRIMARY KEY,
+      message_id TEXT NOT NULL,
+      source BLOB NOT NULL,
+      cached_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS bodies_by_age ON bodies (cached_at);
+    CREATE TRIGGER IF NOT EXISTS bodies_delete AFTER DELETE ON messages BEGIN
+      DELETE FROM bodies WHERE id = old.id;
+    END;
     -- Contentless index: rows are found by id, values come from messages.
     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(subject, people, preview, content='', contentless_delete=1);
     CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
@@ -220,12 +232,16 @@ export function deleteMessages(account: string, mailbox: string, uids: number[])
 /** Moves cached rows to their new mailbox and UIDs; rows without a known new UID are dropped and come back on the next sync. */
 export function moveMessages(account: string, from: string, to: string, moves: Array<[number, number | undefined]>): void {
   const d = open()
-  const relocate = d.prepare('UPDATE OR REPLACE messages SET mailbox = ?, uid = ? WHERE account = ? AND mailbox = ? AND uid = ?')
+  const relocate = d.prepare('UPDATE messages SET mailbox = ?, uid = ? WHERE account = ? AND mailbox = ? AND uid = ?')
   const remove = d.prepare('DELETE FROM messages WHERE account = ? AND mailbox = ? AND uid = ?')
   transaction(() => {
     for (const [uid, next] of moves) {
       if (next === undefined) remove.run(account, from, uid)
-      else relocate.run(to, next, account, from, uid)
+      else {
+        // A row already at the new UID is stale; deleting it (not replacing) lets its cached body go with it.
+        remove.run(account, to, next)
+        relocate.run(to, next, account, from, uid)
+      }
     }
   })
 }
@@ -292,6 +308,58 @@ export function uidRange(account: string, mailbox: string): { min: number; max: 
 
 export function cachedUids(account: string, mailbox: string): number[] {
   return (open().prepare('SELECT uid FROM messages WHERE account = ? AND mailbox = ?').all(account, mailbox) as Array<{ uid: number }>).map((r) => r.uid)
+}
+
+/** How many message sources are kept; the oldest cached go first. */
+const MAX_BODIES = 2_000
+
+/** The cached raw source of a message, if it is still the same message. */
+export function getBody(account: string, mailbox: string, uid: number): Buffer | null {
+  const row = open()
+    .prepare(
+      `SELECT b.source FROM bodies b JOIN messages m ON m.id = b.id
+       WHERE m.account = ? AND m.mailbox = ? AND m.uid = ? AND lower(m.message_id) = b.message_id`,
+    )
+    .get(account, mailbox, uid) as { source: Uint8Array } | undefined
+  return row ? Buffer.from(row.source) : null
+}
+
+let bodiesSaved = 0
+
+/**
+ * Keeps a message's raw source, but only when it was fetched under the mailbox's current UIDVALIDITY and
+ * `messageId` (read from the fetched message itself) is the one stored for that UID now, so a download that
+ * finishes after the folder changed cannot land on another message.
+ */
+export function saveBody(account: string, mailbox: string, uid: number, uidValidity: string, messageId: string | undefined, source: Buffer): void {
+  if (mailboxState(account, mailbox)?.uidvalidity !== uidValidity) return
+  const d = open()
+  const row = d.prepare('SELECT id, message_id FROM messages WHERE account = ? AND mailbox = ? AND uid = ?').get(account, mailbox, uid) as
+    | { id: number; message_id: string | null }
+    | undefined
+  if (!row?.message_id || !messageId || row.message_id.toLowerCase() !== messageId.toLowerCase()) return
+  d.prepare('INSERT OR REPLACE INTO bodies (id, message_id, source, cached_at) VALUES (?, ?, ?, ?)').run(row.id, row.message_id.toLowerCase(), source, Date.now())
+  // The first save of each run prunes too, so short sessions cannot grow the cache past the cap.
+  if (bodiesSaved++ % 50 === 0) pruneBodies()
+}
+
+/** Which of the newest `limit` messages of a mailbox have no cached source yet. */
+export function missingBodies(account: string, mailbox: string, limit: number): number[] {
+  return (
+    open()
+      .prepare(
+        `SELECT m.uid FROM (SELECT id, uid, message_id FROM messages WHERE account = ? AND mailbox = ? ORDER BY date DESC LIMIT ?) m
+         WHERE m.message_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM bodies b WHERE b.id = m.id AND b.message_id = lower(m.message_id))`,
+      )
+      .all(account, mailbox, limit) as Array<{ uid: number }>
+  ).map((r) => r.uid)
+}
+
+/** Drops sources whose message is gone, and the oldest beyond the cap. */
+export function pruneBodies(): void {
+  const d = open()
+  d.exec('DELETE FROM bodies WHERE id NOT IN (SELECT id FROM messages)')
+  d.prepare('DELETE FROM bodies WHERE id IN (SELECT id FROM bodies ORDER BY cached_at DESC LIMIT -1 OFFSET ?)').run(MAX_BODIES)
 }
 
 export function missingPreviews(account: string, mailbox: string, limit: number): number[] {
