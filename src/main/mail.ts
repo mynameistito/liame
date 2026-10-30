@@ -407,6 +407,33 @@ export class MailService {
     return true
   }
 
+  /**
+   * Whether the message was answered anywhere on the server: a message that is not a draft, refers to it, and
+   * comes from someone other than `sender`. (Referring to it makes it later; Date headers are too coarse to compare.)
+   * Throws while offline, so nothing is decided on stale data. Gmail's All Mail covers every label; elsewhere each
+   * folder but Drafts, Trash, and Junk is searched.
+   */
+  async hasReply(messageId: string, sender: string): Promise<boolean> {
+    const boxes = await this.fetchMailboxes()
+    const allMail = boxes.find((b) => b.specialUse === 'all')
+    const searched = allMail ? [allMail] : boxes.filter((b) => b.specialUse !== 'drafts' && b.specialUse !== 'trash' && b.specialUse !== 'junk')
+    for (const box of searched) {
+      const answered = await this.withMailbox(box.path, async (client) => {
+        const uids = await client.search({ draft: false, or: [{ header: { 'in-reply-to': messageId } }, { header: { references: messageId } }] }, { uid: true })
+        if (!uids || !uids.length) return false
+        let found = false
+        // Read every result: leaving the fetch early would leave the connection mid-command.
+        for await (const msg of client.fetch(uids, { envelope: true }, { uid: true })) {
+          const from = msg.envelope?.from?.[0]?.address?.toLowerCase()
+          if (from && from !== sender.toLowerCase()) found = true
+        }
+        return found
+      })
+      if (answered) return true
+    }
+    return false
+  }
+
   /** The folder snoozed mail waits in, if there is one yet. */
   async findSnoozed(): Promise<string | undefined> {
     if (this.mailboxes.length === 0) await this.listMailboxes()

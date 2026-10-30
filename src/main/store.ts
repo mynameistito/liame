@@ -512,12 +512,19 @@ export function findIn(account: string, mailbox: string, messageIds: string[]): 
   return messageIds.flatMap((id) => (find.all(account, mailbox, id) as unknown as Row[]).map(toSummary))
 }
 
-/** Whether anyone other than `sender` wrote in the conversation after `since`, outside the `skip` folders (Drafts). */
-export function hasReply(account: string, thread: string, since: number, sender: string, skip: string[]): boolean {
+/**
+ * Whether anyone other than `sender` wrote in the conversation after `since`, outside the `skip` folders (Drafts).
+ * Messages from `self` (the account) count only when a copy is in one of the `sent` folders, so drafts never do.
+ */
+export function hasReply(account: string, thread: string, since: number, sender: string, skip: string[], self: string, sent: string[]): boolean {
+  const list = (n: number) => Array.from({ length: n }, () => '?').join(',') || "''"
   return !!open()
     .prepare(
-      `SELECT 1 FROM messages WHERE account = ? AND thread = ? AND date > ? AND lower(from_address) != lower(?)
-       AND mailbox NOT IN (${skip.map(() => '?').join(',') || "''"}) LIMIT 1`,
+      `SELECT 1 FROM messages m WHERE account = ? AND thread = ? AND date > ? AND lower(from_address) != lower(?)
+       AND mailbox NOT IN (${list(skip.length)})
+       AND (lower(from_address) != lower(?) OR EXISTS (
+         SELECT 1 FROM messages s WHERE s.account = m.account AND s.mailbox IN (${list(sent.length)}) AND lower(s.message_id) = lower(m.message_id)
+       )) LIMIT 1`,
     )
-    .get(account, thread, since, sender, ...skip)
+    .get(account, thread, since, sender, ...skip, self, ...sent)
 }

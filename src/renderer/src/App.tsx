@@ -182,6 +182,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   /** One result per folder the last archive/delete touched, for undo. */
   const [lastMove, setLastMove] = useState<MoveResult[] | null>(null)
   const [scheduled, setScheduled] = useState<ScheduledItem[]>([])
+  const scheduledRef = useRef(scheduled)
+  scheduledRef.current = scheduled
   const [whenPicker, setWhenPicker] = useState<{ title: string; onPick: (at: number) => void } | null>(null)
   const [darken, setDarken] = useState(true)
   const [imagesAllowed, setImagesAllowed] = useState<string | null>(null)
@@ -415,6 +417,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   useEffect(() => {
     const off = api.onEvent((event) => {
       if (event.type === 'scheduled-changed') return void loadScheduled()
+      // Moves and syncs change where snoozed and reminded messages are (or whether a snooze still holds any).
+      if (scheduledRef.current.length && (event.type === 'mailboxes-changed' || event.type === 'mailbox-synced')) loadScheduled()
       if (currentRef.current === UNIFIED && event.type === 'mailbox-synced') return void refreshList(UNIFIED, false)
       if (event.accountId !== account.id) {
         if (currentRef.current === UNIFIED && event.type === 'mailboxes-changed' && event.accountId) loadOtherBoxes([event.accountId])

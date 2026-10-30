@@ -464,11 +464,6 @@ app.whenReady().then(async () => {
   startScheduler({
     account: (id) => accounts.find((a) => a.id === id),
     service: (id) => services.get(id),
-    refresh: async (id) => {
-      const svc = service(id)
-      const boxes = await svc.listMailboxes()
-      for (const box of boxes.filter((b) => b.specialUse === 'inbox' || b.specialUse === 'sent')) await svc.sync(box.path)
-    },
     notify: notifyScheduled,
     changed: () => send({ type: 'scheduled-changed' }),
   })
