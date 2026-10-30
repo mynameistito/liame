@@ -220,6 +220,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const summary = source.find((m) => m.key === selected) ?? null
   const sourceRef = useRef(source)
   sourceRef.current = source
+  const detailRef = useRef(detail)
+  detailRef.current = detail
 
   const notify = useCallback((text: string, undo = false) => {
     const next = { text, undo }
@@ -476,11 +478,16 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   /** Groups messages by the folder they live in, since the server acts per folder. */
   const byMailbox = (keys: string[]) => {
     const groups = new Map<string, MessageSummary[]>()
-    for (const m of sourceRef.current) {
-      if (!keys.includes(m.key)) continue
-      groups.set(m.mailbox, [...(groups.get(m.mailbox) ?? []), m])
-    }
+    for (const m of rowsFor(keys)) groups.set(m.mailbox, [...(groups.get(m.mailbox) ?? []), m])
     return groups
+  }
+
+  /** List rows for the keys, plus the open message when it has no list row (opened from a notification). */
+  const rowsFor = (keys: string[]) => {
+    const rows = sourceRef.current.filter((m) => keys.includes(m.key))
+    const open = detailRef.current
+    if (open && keys.includes(open.key) && !rows.some((m) => m.key === open.key)) rows.push(open)
+    return rows
   }
 
   const move = useCallback(
@@ -558,7 +565,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   /** Set a flag on the targets; with no value given, flips it (set unless all already have it). */
   const toggle = useCallback(
     async (flag: 'seen' | 'flagged', force?: boolean, keys: string[] = targets) => {
-      const list = source.filter((x) => keys.includes(x.key))
+      const list = rowsFor(keys)
       if (list.length === 0) return
       const value = force ?? !list.every((m) => m[flag])
       const changed = list.filter((m) => m[flag] !== value)
@@ -622,7 +629,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
 
   const setLabel = useCallback(
     (label: string | null, keys: string[] = targets) => {
-      const list = source.filter((x) => keys.includes(x.key))
+      const list = rowsFor(keys)
       if (list.length === 0) return
       patchMessages(
         list.map((m) => m.key),
