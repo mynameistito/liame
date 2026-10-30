@@ -5,6 +5,7 @@ import {
   type MailboxLockObject,
   type MessageAddressObject,
   type MessageStructureObject,
+  type SearchObject,
 } from 'imapflow'
 import { simpleParser, type AddressObject, type ParsedMail } from 'mailparser'
 import * as store from './store'
@@ -408,24 +409,31 @@ export class MailService {
   }
 
   /**
-   * Whether the message was answered anywhere on the server: a message that is not a draft, refers to it, and
-   * comes from someone other than `sender`. (Referring to it makes it later; Date headers are too coarse to compare.)
-   * Throws while offline, so nothing is decided on stale data. Gmail's All Mail covers every label; elsewhere each
-   * folder but Drafts, Trash, and Junk is searched.
+   * Whether the conversation was answered anywhere on the server after `messageId`: a message that is not a draft,
+   * comes from someone other than `sender`, and refers to it, or refers to an earlier message of the conversation
+   * (`earlier`) and is dated no earlier than `since`. Referring to the message itself proves it came later; Date
+   * headers only have whole seconds, hence the second of slack. Throws while offline, so nothing is decided on
+   * stale data. Gmail's All Mail covers every label; elsewhere each folder but Drafts, Trash, and Junk is searched.
    */
-  async hasReply(messageId: string, sender: string): Promise<boolean> {
+  async hasReply(messageId: string, earlier: string[], since: number, sender: string): Promise<boolean> {
+    const anchor = messageId.toLowerCase()
+    const ids = [messageId, ...earlier.filter((id) => id.toLowerCase() !== anchor)]
+    const refersTo = ids.flatMap((id): SearchObject[] => [{ header: { 'in-reply-to': id } }, { header: { references: id } }])
     const boxes = await this.fetchMailboxes()
     const allMail = boxes.find((b) => b.specialUse === 'all')
     const searched = allMail ? [allMail] : boxes.filter((b) => b.specialUse !== 'drafts' && b.specialUse !== 'trash' && b.specialUse !== 'junk')
     for (const box of searched) {
       const answered = await this.withMailbox(box.path, async (client) => {
-        const uids = await client.search({ draft: false, or: [{ header: { 'in-reply-to': messageId } }, { header: { references: messageId } }] }, { uid: true })
+        const uids = await client.search({ draft: false, or: refersTo }, { uid: true })
         if (!uids || !uids.length) return false
         let found = false
         // Read every result: leaving the fetch early would leave the connection mid-command.
-        for await (const msg of client.fetch(uids, { envelope: true }, { uid: true })) {
+        for await (const msg of client.fetch(uids, { envelope: true, headers: ['references'] }, { uid: true })) {
           const from = msg.envelope?.from?.[0]?.address?.toLowerCase()
-          if (from && from !== sender.toLowerCase()) found = true
+          if (!from || from === sender.toLowerCase()) continue
+          const direct = `${msg.envelope?.inReplyTo ?? ''} ${msg.headers?.toString('utf8') ?? ''}`.toLowerCase().includes(anchor)
+          const date = msg.envelope?.date ? new Date(msg.envelope.date).getTime() : 0
+          if (direct || date >= since - 1000) found = true
         }
         return found
       })

@@ -304,7 +304,10 @@ async function answered(item: store.Scheduled, ask: boolean): Promise<boolean> {
   const sent = specialPaths(item.account, ['sent'])
   if (thread && store.hasReply(item.account, thread, item.sentAt ?? 0, item.sender, skip, account?.email ?? '', sent)) return true
   if (!ask || !item.messageId) return false
-  return (await host?.service(item.account)?.hasReply(item.messageId, item.sender)) ?? false
+  // Replies to earlier messages of the conversation count too, when they came after this one.
+  const earlier = thread ? store.getThread(item.account, thread, []).flatMap((m) => m.messageId ?? []) : []
+  if (thread?.startsWith('m:')) earlier.push(thread.slice(2))
+  return (await host?.service(item.account)?.hasReply(item.messageId, earlier.slice(-20), item.sentAt ?? 0, item.sender)) ?? false
 }
 
 /** Where to open the item's message: a snoozed message still in Snoozed, or the stored copy of the reminded message. */
