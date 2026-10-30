@@ -10,7 +10,7 @@ const MAX_OTHER_BODY = 2_000
  * The rest of the message's conversation, oldest first, so a drafted reply knows what was already said.
  * Quoted history is cut from each body, since the conversation itself is there.
  */
-export async function withConversation(svc: MailService, m: MessageContext): Promise<MessageContext> {
+export async function withConversation(svc: MailService, m: MessageContext, signal?: AbortSignal): Promise<MessageContext> {
   if (!m.thread) return m
   const own = m.messageId?.toLowerCase()
   const others = svc
@@ -19,15 +19,17 @@ export async function withConversation(svc: MailService, m: MessageContext): Pro
     .slice(-MAX_OTHERS)
   const conversation: MessageContext[] = []
   for (const x of others) {
-    const detail = await svc.getMessage(x.mailbox, x.uid).catch(() => null)
-    // A stored UID can point at another message after the folder changed on the server; then the body is not this one.
-    if (detail && x.messageId && detail.messageId?.toLowerCase() !== x.messageId.toLowerCase()) continue
+    if (signal?.aborted) break
+    // A stored UID can point at another message after the folder changed on the server, so the body is used only
+    // when its Message-ID proves it is this message; otherwise the stored preview stands in.
+    const detail = x.messageId ? await svc.getMessage(x.mailbox, x.uid).catch(() => null) : null
+    const verified = detail && detail.messageId?.toLowerCase() === x.messageId?.toLowerCase()
     conversation.push({
       from: format(x.from),
       to: x.to.map(format).join(', '),
       date: new Date(x.date).toUTCString(),
       subject: x.subject,
-      text: withoutQuotes(detail?.text ?? x.preview ?? '').slice(0, MAX_OTHER_BODY),
+      text: withoutQuotes((verified ? detail.text : undefined) ?? x.preview ?? '').slice(0, MAX_OTHER_BODY),
     })
   }
   return conversation.length ? { ...m, conversation } : m

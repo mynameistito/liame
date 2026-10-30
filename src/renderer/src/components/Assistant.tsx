@@ -25,13 +25,17 @@ export function Assistant({ message, onClose, closeHint, onUseAsReply, briefRequ
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
 
-  // A new message starts a new conversation.
+  // A new message starts a new conversation. Only a real change counts, not React replaying the effect.
+  const shownFor = useRef<string | null>(null)
   useEffect(() => {
+    const key = message?.key ?? ''
+    if (shownFor.current === key) return
+    shownFor.current = key
     cancel.current?.()
     setTurns([])
     setError('')
     inputRef.current?.focus()
-  }, [message?.uid])
+  }, [message?.key])
 
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight })

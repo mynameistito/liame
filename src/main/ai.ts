@@ -68,13 +68,16 @@ export async function startTask(
   settings: Settings,
   account: AccountConfig,
   emit: (event: AiEvent) => void,
-  prepare: (task: AiTask) => Promise<AiTask> = async (t) => t,
+  prepare: (task: AiTask, signal: AbortSignal) => Promise<AiTask> = async (t) => t,
 ) {
   const controller = new AbortController()
   running.set(id, controller)
   try {
-    task = await prepare(task)
-    if (controller.signal.aborted) return emit({ id, done: true })
+    // Stop ends the task at once, even while slow context reads are still under way (they stop at the next message).
+    const stopped = new Promise<null>((resolve) => controller.signal.addEventListener('abort', () => resolve(null), { once: true }))
+    const ready = await Promise.race([prepare(task, controller.signal), stopped])
+    if (!ready || controller.signal.aborted) return emit({ id, done: true })
+    task = ready
     const { model, system } = await languageModel(settings)
     const instructions = systemPrompt(account)
     const messages = buildMessages(task)

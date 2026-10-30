@@ -399,7 +399,7 @@ function registerIpc(): void {
     const settings = await loadSettings()
     const emit = (event: AiEvent) => window?.webContents.send('liame:ai', event)
     // Streams back over liame:ai events; the invoke itself returns right away.
-    void startTask(taskId, task, settings, accountOf(id), emit, (t) => prepareTask(t, id))
+    void startTask(taskId, task, settings, accountOf(id), emit, (t, signal) => prepareTask(t, id, signal))
   })
   handle('aiCancel', (taskId: string) => cancelTask(taskId))
   handle('classify', async (items: ClassifyItem[]) => classify(items, await loadSettings()))
@@ -407,14 +407,14 @@ function registerIpc(): void {
 }
 
 /** Adds what the model needs and the renderer does not have: the rest of a conversation, or the mail for a brief. */
-async function prepareTask(task: AiTask, id: string): Promise<AiTask> {
+async function prepareTask(task: AiTask, id: string, signal: AbortSignal): Promise<AiTask> {
   if (task.kind === 'brief') {
     const live = [...services.values()]
     return { ...task, digest: dailyDigest(live, listItems().filter((item) => services.has(item.account))) }
   }
   if ((task.kind === 'reply' || task.kind === 'ask') && task.message) {
     // Offline the reply is drafted from the open message alone.
-    const message = await withConversation(service(id), task.message).catch(() => task.message!)
+    const message = await withConversation(service(id), task.message, signal).catch(() => task.message!)
     return { ...task, message }
   }
   return task
