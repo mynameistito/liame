@@ -398,10 +398,8 @@ function registerIpc(): void {
   handle('aiStart', async (taskId: string, task: AiTask, id: string) => {
     const settings = await loadSettings()
     const emit = (event: AiEvent) => window?.webContents.send('liame:ai', event)
-    // Streams back over liame:ai events; the invoke itself returns right away, while context is gathered.
-    void prepareTask(task, id)
-      .then((ready) => startTask(taskId, ready, settings, accountOf(id), emit))
-      .catch((error) => emit({ id: taskId, error: error instanceof Error ? error.message : String(error) }))
+    // Streams back over liame:ai events; the invoke itself returns right away.
+    void startTask(taskId, task, settings, accountOf(id), emit, (t) => prepareTask(t, id))
   })
   handle('aiCancel', (taskId: string) => cancelTask(taskId))
   handle('classify', async (items: ClassifyItem[]) => classify(items, await loadSettings()))

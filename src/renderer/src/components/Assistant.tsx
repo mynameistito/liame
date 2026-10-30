@@ -10,8 +10,8 @@ interface Props {
   onClose: () => void
   closeHint: string
   onUseAsReply: (text: string) => void
-  /** Set when the daily brief is asked for from outside (the command palette); cleared through onBriefStarted. */
-  briefRequest: boolean
+  /** Nonzero and new each time the daily brief is asked for from outside (the command palette); cleared through onBriefStarted. */
+  briefRequest: number
   onBriefStarted: () => void
 }
 
@@ -37,11 +37,15 @@ export function Assistant({ message, onClose, closeHint, onUseAsReply, briefRequ
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight })
   }, [turns])
 
+  // Each request runs once (the ref survives React's effect replay), after any answer still streaming is stopped.
+  const briefDone = useRef(0)
   useEffect(() => {
-    if (!briefRequest) return
+    if (!briefRequest || briefDone.current === briefRequest) return
+    if (streaming) return void cancel.current?.()
+    briefDone.current = briefRequest
     onBriefStarted()
     void ask('Daily brief', true)
-  }, [briefRequest])
+  }, [briefRequest, streaming])
 
   /** Asks a question, or with `brief` runs the daily brief, which follow-up questions can then refer to. */
   async function ask(text: string, brief = false) {

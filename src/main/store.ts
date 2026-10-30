@@ -506,6 +506,14 @@ export function findMessage(account: string, messageId: string, avoid: string[] 
   return row && toSummary(row)
 }
 
+/** Unread messages in a folder dated after `since`, newest first. */
+export function unreadSince(account: string, mailbox: string, since: number, limit: number): MessageSummary[] {
+  const rows = open()
+    .prepare('SELECT * FROM messages WHERE account = ? AND mailbox = ? AND seen = 0 AND date >= ? ORDER BY date DESC LIMIT ?')
+    .all(account, mailbox, since, limit) as unknown as Row[]
+  return rows.map(toSummary)
+}
+
 /** Stored copies in one folder of the messages with these Message-IDs. */
 export function findIn(account: string, mailbox: string, messageIds: string[]): MessageSummary[] {
   const find = open().prepare('SELECT * FROM messages WHERE account = ? AND mailbox = ? AND lower(message_id) = lower(?)')

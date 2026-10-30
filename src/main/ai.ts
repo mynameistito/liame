@@ -61,10 +61,20 @@ export async function listModels(settings: Settings): Promise<{ models: string[]
   return { models: models.filter((m) => !m.hidden).map((m) => m.id), defaultModel: defaultModel?.id }
 }
 
-export async function startTask(id: string, task: AiTask, settings: Settings, account: AccountConfig, emit: (event: AiEvent) => void) {
+/** Streams a task's output. `prepare` adds context first (the conversation, the brief's mail); Stop works during it too. */
+export async function startTask(
+  id: string,
+  task: AiTask,
+  settings: Settings,
+  account: AccountConfig,
+  emit: (event: AiEvent) => void,
+  prepare: (task: AiTask) => Promise<AiTask> = async (t) => t,
+) {
   const controller = new AbortController()
   running.set(id, controller)
   try {
+    task = await prepare(task)
+    if (controller.signal.aborted) return emit({ id, done: true })
     const { model, system } = await languageModel(settings)
     const instructions = systemPrompt(account)
     const messages = buildMessages(task)

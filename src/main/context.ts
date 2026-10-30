@@ -20,6 +20,8 @@ export async function withConversation(svc: MailService, m: MessageContext): Pro
   const conversation: MessageContext[] = []
   for (const x of others) {
     const detail = await svc.getMessage(x.mailbox, x.uid).catch(() => null)
+    // A stored UID can point at another message after the folder changed on the server; then the body is not this one.
+    if (detail && x.messageId && detail.messageId?.toLowerCase() !== x.messageId.toLowerCase()) continue
     conversation.push({
       from: format(x.from),
       to: x.to.map(format).join(', '),
@@ -36,10 +38,7 @@ export function dailyDigest(services: MailService[], scheduled: ScheduledItem[],
   const since = now - 2 * 86_400_000
   const lines: string[] = []
   for (const svc of services) {
-    const unread = store
-      .listMessages(svc.account.id, svc.inboxPath(), 0, 200)
-      .filter((m) => !m.seen && Date.parse(m.date) >= since)
-      .slice(0, 40)
+    const unread = store.unreadSince(svc.account.id, svc.inboxPath(), since, 40)
     lines.push(`## ${svc.account.email}: ${unread.length} unread in the inbox`)
     for (const m of unread) lines.push(`- ${when(Date.parse(m.date))} | ${format(m.from)} | ${m.subject} | ${(m.preview ?? '').slice(0, 200)}`)
   }

@@ -176,7 +176,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [assistantOpen, setAssistantOpen] = useState(false)
-  const [briefRequest, setBriefRequest] = useState(false)
+  const [briefRequest, setBriefRequest] = useState(0)
   const [activeLabel, setActiveLabel] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [toast, setToast] = useState<{ text: string; undo?: boolean } | null>(null)
@@ -893,7 +893,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     toggleSidebar: { run: toggleSidebar },
     toggleList: { run: toggleList },
     assistant: { run: () => setAssistantOpen((open) => !open) },
-    brief: { run: () => (setAssistantOpen(true), setBriefRequest(true)) },
+    brief: { run: () => (setAssistantOpen(true), setBriefRequest(Date.now())) },
     refresh: { run: () => void refreshAll() },
     settings: { run: () => setSettingsTab('general') },
     shortcuts: { run: () => setSettingsTab('shortcuts') },
@@ -1210,7 +1210,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
           closeHint={hint('assistant')}
           onUseAsReply={(text) => reply('reply', { text })}
           briefRequest={briefRequest}
-          onBriefStarted={() => setBriefRequest(false)}
+          onBriefStarted={() => setBriefRequest(0)}
         />
         </AccountContext.Provider>
       )}
