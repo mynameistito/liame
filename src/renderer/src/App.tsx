@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   Draft,
   Mailbox,
-  MailEvent,
   MessageContext,
   MessageDetail,
   MessageSummary,
@@ -10,7 +9,7 @@ import type {
   MoveResult,
   MoveTarget,
   Prefs,
-  PublicAccount,
+  AccountSummary,
   PublicSettings,
 } from '../../shared/types'
 import { COMMANDS, type CommandId, comboOf, formatCombo, isPlainKey, keymap, keysFor, toAccelerator } from './commands'
@@ -22,7 +21,22 @@ import { Reader, type ReplyMode } from './components/Reader'
 import { Settings, type SettingsTab } from './components/Settings'
 import { Setup } from './components/Setup'
 import { Sidebar } from './components/Sidebar'
-import { api, classifyItem, type Contact, displayName, errorMessage, formatAddress, loadContacts, longDate, rememberContacts, toContext, usePersistent } from './lib'
+import {
+  AccountContext,
+  api,
+  classifyItem,
+  type Contact,
+  displayName,
+  errorMessage,
+  formatAddress,
+  loadContacts,
+  longDate,
+  mailApi,
+  rememberContacts,
+  toContext,
+  useAccount,
+  usePersistent,
+} from './lib'
 
 const EMPTY_DRAFT: Draft = { to: '', cc: '', bcc: '', subject: '', text: '', attachments: [] }
 
@@ -38,27 +52,80 @@ const DEFAULT_PREFS: Prefs = {
   darkenEmails: true,
 }
 
+/** A message to show after switching to its account, e.g. from a notification click. */
+interface OpenRequest {
+  accountId: string
+  mailbox: string
+  uid?: number
+  /** Distinguishes repeated clicks on the same message. */
+  at: number
+}
+
 export function App() {
-  const [account, setAccount] = useState<PublicAccount | null | undefined>(undefined)
+  const [accounts, setAccounts] = useState<AccountSummary[] | undefined>(undefined)
+  const [activeId, setActiveId] = usePersistent('activeAccount', '')
+  const [adding, setAdding] = useState(false)
+  const [openRequest, setOpenRequest] = useState<OpenRequest | null>(null)
 
+  const reload = useCallback(() => api.listAccounts().then(setAccounts), [])
   useEffect(() => {
-    api.getAccount().then(setAccount)
-  }, [])
+    void reload()
+    return api.onEvent((event) => {
+      if (event.type === 'accounts-changed') void reload()
+      if (event.type === 'open-message' && event.accountId) {
+        setActiveId(event.accountId)
+        setOpenRequest({ accountId: event.accountId, mailbox: event.mailbox ?? 'INBOX', uid: event.uid, at: Date.now() })
+      }
+    })
+  }, [reload, setActiveId])
 
-  if (account === undefined) return null
-  if (account === null) return <Setup onDone={setAccount} />
+  const active = accounts?.find((a) => a.id === activeId) ?? accounts?.[0]
+  const context = useMemo(() => (active ? { account: active, mail: mailApi(active.id) } : null), [active?.id])
+
+  if (accounts === undefined) return null
+  if (!active || !context || adding) {
+    return (
+      <Setup
+        onDone={(account) => {
+          setAdding(false)
+          setActiveId(account.id)
+          void reload()
+        }}
+        onCancel={active ? () => setAdding(false) : undefined}
+      />
+    )
+  }
   return (
-    <Mail
-      account={account}
-      onSignOut={async () => {
-        await api.signOut()
-        setAccount(null)
-      }}
-    />
+    <AccountContext.Provider value={{ ...context, account: active }}>
+      <Mail
+        // A fresh mount per account resets every list, selection and search.
+        key={active.id}
+        account={active}
+        accounts={accounts}
+        openRequest={openRequest?.accountId === active.id ? openRequest : null}
+        onSwitch={setActiveId}
+        onAdd={() => setAdding(true)}
+        onRemove={async (id) => {
+          if (!(await api.removeAccount(id))) return
+          if (id === active.id) setActiveId(accounts.find((a) => a.id !== id)?.id ?? '')
+          void reload()
+        }}
+      />
+    </AccountContext.Provider>
   )
 }
 
-function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () => void }) {
+interface MailProps {
+  account: AccountSummary
+  accounts: AccountSummary[]
+  openRequest: OpenRequest | null
+  onSwitch: (id: string) => void
+  onAdd: () => void
+  onRemove: (id: string) => void
+}
+
+function Mail({ account, accounts, openRequest, onSwitch, onAdd, onRemove }: MailProps) {
+  const { mail } = useAccount()
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([])
   const [current, setCurrent] = useState('')
   const [messages, setMessages] = useState<MessageSummary[]>([])
@@ -79,7 +146,6 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [assistantOpen, setAssistantOpen] = useState(false)
   const [activeLabel, setActiveLabel] = useState<string | null>(null)
-  const [status, setStatus] = useState<MailEvent['status']>('connecting')
   const [refreshing, setRefreshing] = useState(false)
   const [toast, setToast] = useState<{ text: string; undo?: boolean } | null>(null)
   const [lastMove, setLastMove] = useState<MoveResult | null>(null)
@@ -109,7 +175,6 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   mailboxesRef.current = mailboxes
   const selectedRef = useRef(selected)
   selectedRef.current = selected
-  const inboxMaxUid = useRef(0)
   /** A message to open once its mailbox has loaded (from a notification click). */
   const pendingOpen = useRef<{ path: string; uid: number } | null>(null)
   const focusSearch = useRef(false)
@@ -158,7 +223,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
 
   const refreshMailboxes = useCallback(async () => {
     try {
-      const boxes = await api.listMailboxes()
+      const boxes = await mail.listMailboxes()
       setMailboxes(boxes)
       setCurrent((path) => path || boxes.find((b) => b.specialUse === 'inbox')?.path || boxes[0]?.path || '')
     } catch (err) {
@@ -169,7 +234,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   const loadPreviews = useCallback(async (path: string, list: MessageSummary[]) => {
     const missing = list.filter((m) => m.preview === undefined).map((m) => m.uid)
     for (let i = 0; i < missing.length; i += 25) {
-      const previews = await api.previews(path, missing.slice(i, i + 25)).catch(() => ({}) as Record<number, string>)
+      const previews = await mail.previews(path, missing.slice(i, i + 25)).catch(() => ({}) as Record<number, string>)
       if (currentRef.current !== path) return
       const add = (items: MessageSummary[]) => items.map((m) => (m.uid in previews ? { ...m, preview: previews[m.uid] } : m))
       setMessages(add)
@@ -187,12 +252,8 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
       }
       setListError('')
       try {
-        const page = await api.listMessages(path)
+        const page = await mail.listMessages(path)
         if (currentRef.current !== path) return
-        // In the foreground there is nothing to announce, so mail seen here moves the notification baseline.
-        if ((!inboxMaxUid.current || document.hasFocus()) && mailboxesRef.current.find((b) => b.path === path)?.specialUse === 'inbox') {
-          inboxMaxUid.current = Math.max(0, ...page.messages.map((m) => m.uid))
-        }
         setMessages((old) => {
           const known = new Map(old.map((m) => [m.uid, m.preview]))
           const fresh = page.messages.map((m) => ({ ...m, preview: m.preview ?? known.get(m.uid) }))
@@ -221,7 +282,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
     loadingMore.current = true
     const path = current
     try {
-      const page = await api.listMessages(path, nextBefore)
+      const page = await mail.listMessages(path, nextBefore)
       if (currentRef.current !== path) return
       setMessages((old) => [...old, ...page.messages.filter((m) => !old.some((o) => o.uid === m.uid))])
       setNextBefore(page.nextBefore)
@@ -268,38 +329,10 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
   }, [current, refreshList])
 
   // Server push from the IDLE connection, plus a refresh whenever the window comes back to front.
+  // Notifications are shown by the main process for every account.
   useEffect(() => {
-    // The watcher may have connected before this window subscribed.
-    void api.getStatus().then(setStatus)
-    // Background notifications: fetch the newest inbox page and announce unread mail newer than the last one seen.
-    const announce = async (mailbox: string) => {
-      const inbox = mailboxesRef.current.find((b) => b.specialUse === 'inbox')
-      if (!prefsRef.current.notifications || document.hasFocus() || !inbox || inbox.path.toUpperCase() !== mailbox.toUpperCase()) return
-      const page = await api.listMessages(inbox.path).catch(() => null)
-      if (!page) return
-      const fresh = page.messages.filter((m) => m.uid > inboxMaxUid.current && !m.seen)
-      inboxMaxUid.current = Math.max(inboxMaxUid.current, ...page.messages.map((m) => m.uid))
-      const show = (title: string, body: string, uid?: number) => {
-        const n = new Notification(title, { body })
-        n.onclick = () => {
-          api.focusWindow()
-          // Anything that could hide the message goes: label view, filters, search, bulk picks.
-          setActiveLabel(null)
-          setFilter('all')
-          setQuery('')
-          setResults(null)
-          setChecked([])
-          if (uid !== undefined) pendingOpen.current = { path: inbox.path, uid }
-          if (currentRef.current === inbox.path) void refreshList(inbox.path, false)
-          else setCurrent(inbox.path)
-        }
-      }
-      if (fresh.length > 3) show(`${fresh.length} new messages`, fresh.slice(0, 3).map((m) => displayName(m.from)).join(', '))
-      else for (const m of fresh) show(displayName(m.from), m.subject, m.uid)
-    }
     const off = api.onEvent((event) => {
-      if (event.type === 'connection') setStatus(event.status)
-      if (event.type === 'new-mail' && event.mailbox) void announce(event.mailbox)
+      if (event.accountId !== account.id) return
       if (event.type === 'new-mail' || event.type === 'mailboxes-changed') void refreshMailboxes()
       if (event.type === 'new-mail' && currentRef.current.toUpperCase() === event.mailbox?.toUpperCase()) {
         void refreshList(currentRef.current, false)
@@ -314,7 +347,23 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
       off()
       window.removeEventListener('focus', onFocus)
     }
-  }, [refreshMailboxes, refreshList])
+  }, [account.id, refreshMailboxes, refreshList])
+
+  // A clicked notification: clear anything that could hide the message, then open it once its mailbox loads.
+  useEffect(() => {
+    if (!openRequest || !mailboxes.length) return
+    const target = mailboxes.find((b) => b.path.toUpperCase() === openRequest.mailbox.toUpperCase())
+    if (!target) return
+    setActiveLabel(null)
+    setFilter('all')
+    setQuery('')
+    setResults(null)
+    setChecked([])
+    if (openRequest.uid !== undefined) pendingOpen.current = { path: target.path, uid: openRequest.uid }
+    if (currentRef.current === target.path) void refreshList(target.path, false)
+    else setCurrent(target.path)
+    // Each request runs once; `at` changes for every new click.
+  }, [openRequest?.at, mailboxes.length > 0])
 
   // Debounced server-side search in the current mailbox.
   useEffect(() => {
@@ -326,7 +375,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
     const path = current
     const timer = window.setTimeout(async () => {
       try {
-        const found = await api.search(path, q)
+        const found = await mail.search(path, q)
         if (currentRef.current !== path) return
         setResults(found)
         void loadPreviews(path, found)
@@ -348,7 +397,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
       setDarken(prefsRef.current.darkenEmails)
       setImagesAllowed(null)
       try {
-        const message = await api.getMessage(current, uid)
+        const message = await mail.getMessage(current, uid)
         if (request !== detailRequest.current) return
         setDetail(message)
         const { markRead } = prefsRef.current
@@ -360,7 +409,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
           }
           patchMessages([uid], (m) => ({ ...m, seen: true }))
           setMailboxes((boxes) => boxes.map((b) => (b.path === current ? { ...b, unread: Math.max(0, b.unread - 1) } : b)))
-          await api.setFlags(current, [uid], { seen: true })
+          await mail.setFlags(current, [uid], { seen: true })
         }
       } catch (err) {
         if (request === detailRequest.current) setDetailError(errorMessage(err))
@@ -430,7 +479,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         else setSelected(null)
       }
       try {
-        const moved = await api.move(current, uids, target)
+        const moved = await mail.move(current, uids, target)
         setLastMove(moved)
         const permanent = target === 'trash' && box?.specialUse === 'trash'
         const where = typeof target === 'string' ? target : (mailboxes.find((b) => b.path === target.path)?.name ?? target.path)
@@ -458,7 +507,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
     const move = lastMove
     setLastMove(null)
     try {
-      await api.undoMove(move)
+      await mail.undoMove(move)
       notify('Moved back')
       if (currentRef.current === move.to) {
         // The moved copy is gone from here; drop it rather than wait for the next refresh.
@@ -486,7 +535,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         setMailboxes((boxes) => boxes.map((b) => (b.path === current ? { ...b, unread: Math.max(0, b.unread + (value ? -1 : 1) * changed.length) } : b)))
       }
       try {
-        await api.setFlags(current, changed, { [flag]: value })
+        await mail.setFlags(current, changed, { [flag]: value })
       } catch (err) {
         notify(errorMessage(err))
       }
@@ -502,7 +551,7 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
     )
     setMailboxes((boxes) => boxes.map((b) => (b.path === path ? { ...b, unread: 0 } : b)))
     try {
-      await api.markAllRead(path)
+      await mail.markAllRead(path)
       notify('Marked all as read')
     } catch (err) {
       notify(errorMessage(err))
@@ -615,6 +664,10 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
     filterFlagged: { run: () => setFilter('flagged') },
     toggleDarken: { run: () => setDarken((d) => !d), enabled: Boolean(hasDetail && detail?.html) },
     loadImages: { run: () => setImagesAllowed(selected), enabled: Boolean(hasDetail && detail?.html && !prefs.remoteImages) },
+    nextAccount: {
+      run: () => onSwitch(accounts[(accounts.findIndex((a) => a.id === account.id) + 1) % accounts.length].id),
+      enabled: accounts.length > 1,
+    },
     toggleSidebar: { run: toggleSidebar },
     toggleList: { run: toggleList },
     assistant: { run: () => setAssistantOpen((open) => !open) },
@@ -651,6 +704,9 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
       const command = commands[c.id as keyof typeof commands]
       return { id: c.id, title: c.title, group: c.group, hint: hint(c.id), disabled: command.enabled === false, run: command.run }
     }),
+    ...accounts
+      .filter((a) => a.id !== account.id)
+      .map((a) => ({ id: `account:${a.id}`, title: `Switch to ${a.email}`, group: 'Accounts', run: () => onSwitch(a.id) })),
     ...mailboxes.map((b) => ({
       id: `box:${b.path}`,
       title: `Go to ${b.path.toUpperCase() === 'INBOX' ? 'Inbox' : b.path}`,
@@ -795,7 +851,12 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         account={account}
         mailboxes={mailboxes}
         current={current}
-        status={status}
+        status={account.status}
+        accounts={accounts}
+        activeAccount={account.id}
+        onSwitchAccount={onSwitch}
+        onAddAccount={onAdd}
+        onRemoveAccount={onRemove}
         refreshing={refreshing}
         labels={labelList}
         labelCounts={labelCounts}
@@ -816,7 +877,6 @@ function Mail({ account, onSignOut }: { account: PublicAccount; onSignOut: () =>
         }}
         onCompose={compose}
         onRefresh={refreshAll}
-        onSignOut={onSignOut}
       />
       )}
       {fitted.listShown && (

@@ -18,7 +18,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { LabelDef, MessageDetail, MessageSummary } from '../../../shared/types'
 import type { CommandId } from '../commands'
-import { api, avatarColor, displayName, fileSize, initials, longDate } from '../lib'
+import { api, avatarColor, displayName, fileSize, initials, longDate, useAccount } from '../lib'
 
 export type ReplyMode = 'reply' | 'all' | 'forward'
 
@@ -67,6 +67,7 @@ export interface BulkActions {
 }
 
 export function Reader({ summary, detail, loading, error, mailbox, inTrash, labels, assistantOpen, hint, darken, blockImages, bulk, ...actions }: Props) {
+  const { mail } = useAccount()
   const showList = actions.listHidden && (
     <ToolButton title={`Show message list  ${hint('toggleList')}`} onClick={actions.onShowList} icon={<PanelLeft size={16} />} />
   )
@@ -207,7 +208,7 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
           {detail && detail.attachments.length > 0 && (
             <div className="attachments">
               {detail.attachments.map((file) => (
-                <button key={file.partId} className="attachment" onClick={() => api.saveAttachment(mailbox, detail.uid, file.partId)} title="Save">
+                <button key={file.partId} className="attachment" onClick={() => mail.saveAttachment(mailbox, detail.uid, file.partId)} title="Save">
                   <Paperclip size={15} />
                   <div style={{ minWidth: 0 }}>
                     <div className="attachment-name">{file.filename}</div>

@@ -269,13 +269,53 @@ kbd {
   font-weight: 600;
 }
 
-.account {
+.accounts {
   flex: none;
+  padding: 8px 8px 10px;
+  border-top: 1px solid var(--line);
+}
+.account {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 14px 14px 18px;
-  border-top: 1px solid var(--line);
+  padding: 7px 10px;
+  border-radius: 7px;
+  text-align: left;
+}
+.account:hover {
+  background: var(--hover);
+}
+.account.active {
+  background: var(--selected);
+}
+.account .count {
+  font-size: 12px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.account-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 2px 0 6px;
+}
+.account-actions .spacer {
+  flex: 1;
+}
+.add-account {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.add-account:hover {
+  color: var(--text);
+  background: var(--hover);
 }
 .account-text {
   flex: 1;
@@ -1937,4 +1977,24 @@ body.resizing * {
 /* Rows are not tab stops; the list shows focus through the selected row instead of a ring. */
 .row:focus-visible {
   outline: none;
+}
+
+.setup-providers {
+  display: flex;
+  margin-bottom: 20px;
+}
+.setup-providers button {
+  flex: 1;
+}
+.setup-cancel {
+  width: 100%;
+  margin-top: 10px;
+  height: 32px;
+  color: var(--text-3);
+}
+.setup-cancel:hover {
+  color: var(--text);
+}
+.setup-field small a {
+  color: var(--accent);
 }

@@ -1,6 +1,10 @@
 export type ZohoRegion = 'com' | 'eu' | 'in' | 'com.au' | 'jp' | 'ca'
 
+export type MailProvider = 'zoho' | 'gmail' | 'imap'
+
 export interface AccountConfig {
+  id: string
+  provider: MailProvider
   name: string
   email: string
   password: string
@@ -8,8 +12,18 @@ export interface AccountConfig {
   smtp: { host: string; port: number; secure: boolean }
 }
 
+/** What the setup screen submits; a new account gets its id in the main process. */
+export type AccountInput = Omit<AccountConfig, 'id'> & { id?: string }
+
 /** Account shape exposed to the renderer. The password never leaves the main process. */
 export type PublicAccount = Omit<AccountConfig, 'password'>
+
+export interface AccountSummary extends PublicAccount {
+  unread: number
+  status: ConnectionStatus
+}
+
+export type ConnectionStatus = 'online' | 'offline' | 'connecting'
 
 export type SpecialUse = 'inbox' | 'sent' | 'drafts' | 'archive' | 'junk' | 'trash' | 'flagged' | 'all'
 
@@ -98,9 +112,12 @@ export interface MenuItemSpec {
 }
 
 export interface MailEvent {
-  type: 'new-mail' | 'mailboxes-changed' | 'connection'
+  type: 'new-mail' | 'mailboxes-changed' | 'connection' | 'accounts-changed' | 'open-message'
+  accountId?: string
   mailbox?: string
-  status?: 'online' | 'offline' | 'connecting'
+  status?: ConnectionStatus
+  /** For 'open-message': the message a clicked notification points at. */
+  uid?: number
 }
 
 export type AiProvider = 'chatgpt' | 'openai'
@@ -207,32 +224,32 @@ export interface ClassifyItem {
 }
 
 export interface LiameApi {
-  getAccount(): Promise<PublicAccount | null>
-  getStatus(): Promise<MailEvent['status']>
-  saveAccount(account: AccountConfig): Promise<PublicAccount>
-  testAccount(account: AccountConfig): Promise<{ ok: true } | { ok: false; error: string }>
-  signOut(): Promise<void>
-  listMailboxes(): Promise<Mailbox[]>
-  listMessages(mailbox: string, before?: number): Promise<MessagePage>
-  previews(mailbox: string, uids: number[]): Promise<Record<number, string>>
-  search(mailbox: string, query: string): Promise<MessageSummary[]>
-  getMessage(mailbox: string, uid: number): Promise<MessageDetail>
-  setFlags(mailbox: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }): Promise<void>
-  move(mailbox: string, uids: number[], target: MoveTarget): Promise<MoveResult | null>
-  markAllRead(mailbox: string): Promise<void>
-  saveDraft(draft: Draft): Promise<number | null>
+  listAccounts(): Promise<AccountSummary[]>
+  saveAccount(account: AccountInput): Promise<PublicAccount>
+  testAccount(account: AccountInput): Promise<{ ok: true } | { ok: false; error: string }>
+  /** Asks for confirmation natively; resolves false when the user keeps the account. */
+  removeAccount(accountId: string): Promise<boolean>
+  listMailboxes(accountId: string): Promise<Mailbox[]>
+  listMessages(accountId: string, mailbox: string, before?: number): Promise<MessagePage>
+  previews(accountId: string, mailbox: string, uids: number[]): Promise<Record<number, string>>
+  search(accountId: string, mailbox: string, query: string): Promise<MessageSummary[]>
+  getMessage(accountId: string, mailbox: string, uid: number): Promise<MessageDetail>
+  setFlags(accountId: string, mailbox: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }): Promise<void>
+  move(accountId: string, mailbox: string, uids: number[], target: MoveTarget): Promise<MoveResult | null>
+  markAllRead(accountId: string, mailbox: string): Promise<void>
+  saveDraft(accountId: string, draft: Draft): Promise<number | null>
+  undoMove(accountId: string, move: MoveResult): Promise<void>
+  saveAttachment(accountId: string, mailbox: string, uid: number, partId: number): Promise<void>
+  send(accountId: string, draft: Draft): Promise<void>
   contextMenu(items: MenuItemSpec[]): Promise<string | null>
   focusWindow(): void
-  undoMove(move: MoveResult): Promise<void>
   setZoom(factor: number): void
-  saveAttachment(mailbox: string, uid: number, partId: number): Promise<void>
   pickAttachments(): Promise<string[]>
-  send(draft: Draft): Promise<void>
   openExternal(url: string): Promise<void>
   getSettings(): Promise<PublicSettings>
   saveSettings(patch: SettingsPatch): Promise<PublicSettings>
   aiModels(): Promise<{ models: string[]; defaultModel?: string }>
-  aiStart(id: string, task: AiTask): Promise<void>
+  aiStart(id: string, task: AiTask, accountId: string): Promise<void>
   aiCancel(id: string): Promise<void>
   onAi(listener: (event: AiEvent) => void): () => void
   classify(items: ClassifyItem[]): Promise<Record<number, string | null>>
