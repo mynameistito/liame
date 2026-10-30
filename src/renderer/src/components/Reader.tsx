@@ -131,7 +131,9 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
   const message = detail ?? summary
   const recipients = [...message.to, ...(detail?.cc ?? [])]
   // Other messages of the conversation sit around the open one in date order, collapsed until clicked.
-  const others = actions.thread?.filter((m) => m.key !== message.key) ?? []
+  // Gmail can hold the open message in several folders; leave out every copy of it, not just this folder's.
+  const openId = message.messageId?.toLowerCase()
+  const others = actions.thread?.filter((m) => m.key !== message.key && !(openId && m.messageId?.toLowerCase() === openId)) ?? []
   const openedAt = Date.parse(message.date)
   const card = (m: MessageSummary) => (
     <ThreadCard key={m.key} message={m} body={actions.expanded[m.key]} darken={darken} blockImages={blockImages} onToggle={() => actions.onToggleMessage(m.key)} />
@@ -149,11 +151,12 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
         <ToolButton title={`${inTrash ? 'Delete permanently' : 'Move to Trash'}  ${hint('trash')}`} onClick={actions.onTrash} icon={<Trash2 size={16} />} />
         <span className="sep" />
         <ToolButton
-          title={`${message.seen ? 'Mark as unread' : 'Mark as read'}  ${hint('toggleRead')}`}
+          title={`${summary.seen ? 'Mark as unread' : 'Mark as read'}  ${hint('toggleRead')}`}
           onClick={actions.onToggleSeen}
-          icon={message.seen ? <Mail size={16} /> : <MailOpen size={16} />}
+          icon={summary.seen ? <Mail size={16} /> : <MailOpen size={16} />}
         />
-        <ToolButton title={`${message.flagged ? 'Unflag' : 'Flag'}  ${hint('toggleFlag')}`} onClick={actions.onToggleFlag} on={message.flagged} icon={<Flag size={16} fill={message.flagged ? 'currentColor' : 'none'} />} />
+        {/* Read and flag state come from the row, which for a conversation covers all of its messages. */}
+        <ToolButton title={`${summary.flagged ? 'Unflag' : 'Flag'}  ${hint('toggleFlag')}`} onClick={actions.onToggleFlag} on={summary.flagged} icon={<Flag size={16} fill={summary.flagged ? 'currentColor' : 'none'} />} />
         <span className="spacer" />
         <ToolButton title={`Assistant  ${hint('assistant')}`} onClick={actions.onAssistant} on={assistantOpen} icon={<Sparkles size={15} />} />
         {detail?.html && (

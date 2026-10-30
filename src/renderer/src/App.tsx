@@ -282,6 +282,14 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         if (open && !keys.has(open)) {
           const next = byThread(open)
           if (next) openRef.current(next, page.messages.find((m) => m.key === next))
+        } else if (open) {
+          // Same row, but the conversation may have grown (a reply landed in Sent): reread it.
+          const row = page.messages.find((m) => m.key === open)
+          if (row?.thread) {
+            void mail.getThread(row.thread).then((conversation) => {
+              if (selectedRef.current === row.key) setThread(conversation.length > 1 ? conversation : null)
+            })
+          }
         }
         setChecked((list) => list.map((key) => (keys.has(key) ? key : (byThread(key) ?? key))))
         setContacts(rememberContacts(page.messages.flatMap((m) => [m.from, ...m.to]), account.email))
