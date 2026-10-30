@@ -144,6 +144,9 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   contextsRef.current = contexts
   const mailFor = (id: string) => contextsRef.current.get(id)?.mail ?? mail
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([])
+  /** Folders of the other accounts, for moving their messages out of All Inboxes. */
+  const [otherBoxes, setOtherBoxes] = useState<Record<string, Mailbox[]>>({})
+  const boxesOf = (id: string) => (id === account.id ? mailboxes : (otherBoxes[id] ?? []))
   const [current, setCurrent] = useState('')
   const [messages, setMessages] = useState<MessageSummary[]>([])
   const [hasMore, setHasMore] = useState(false)
@@ -480,7 +483,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
             if (selectedRef.current !== key || request !== detailRequest.current) return
           }
           patchMessages([key], (m) => ({ ...m, seen: true }))
-          setMailboxes((boxes) => boxes.map((b) => (b.path === target.mailbox ? { ...b, unread: Math.max(0, b.unread - 1) } : b)))
+          if (target.account === account.id)
+            setMailboxes((boxes) => boxes.map((b) => (b.path === target.mailbox ? { ...b, unread: Math.max(0, b.unread - 1) } : b)))
           // Opening a conversation reads all of it.
           await mailFor(target.account).setFlags(target.mailbox, target.threadUids ?? [target.uid], { seen: true })
         }
@@ -552,6 +556,29 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     return rows
   }
 
+  /** Folders the messages can move to: their account's, other than the one they are all in. None when they span accounts. */
+  useEffect(() => {
+    if (current !== UNIFIED) return
+    let live = true
+    for (const a of accounts.filter((a) => a.id !== account.id)) {
+      void api
+        .listMailboxes(a.id)
+        .then((boxes) => live && setOtherBoxes((all) => ({ ...all, [a.id]: boxes })))
+        .catch(() => {})
+    }
+    return () => {
+      live = false
+    }
+  }, [current, accounts.length, account.id])
+
+  const foldersFor = (keys: string[]) => {
+    const rows = rowsFor(keys)
+    const ids = new Set(rows.map((m) => m.account))
+    if (ids.size !== 1) return []
+    const sources = new Set(rows.map((m) => m.mailbox))
+    return boxesOf(rows[0].account).filter((b) => !(sources.size === 1 && sources.has(b.path)))
+  }
+
   const move = useCallback(
     async (target: MoveTarget, keys: string[] = targets) => {
       if (keys.length === 0) return
@@ -580,8 +607,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         }
         // Undo only when every folder's move can be reversed exactly.
         setLastMove(moved.length === groups.length ? moved : null)
-        const permanent = target === 'trash' && groups.every((g) => mailboxes.find((b) => b.path === g.mailbox)?.specialUse === 'trash')
-        const where = typeof target === 'string' ? target : (mailboxes.find((b) => b.path === target.path)?.name ?? target.path)
+        const permanent = target === 'trash' && groups.every((g) => boxesOf(g.account).find((b) => b.path === g.mailbox)?.specialUse === 'trash')
+        const where = typeof target === 'string' ? target : (boxesOf(groups[0].account).find((b) => b.path === target.path)?.name ?? target.path)
         const verb = permanent
           ? 'deleted'
           : target === 'archive'
@@ -598,7 +625,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         void refreshList(current, false)
       }
     },
-    [targets, selected, visible, current, mailboxes, open, notify, refreshList],
+    [targets, selected, visible, current, mailboxes, otherBoxes, open, notify, refreshList],
   )
 
   const undo = useCallback(async () => {
@@ -650,7 +677,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     const path = current
     const unified = path === UNIFIED
     patchMessages(
-      [...messages, ...(results ?? [])].filter((m) => !m.seen && (unified || m.mailbox === path)).map((m) => m.key),
+      // In All Inboxes only the inboxes are marked, not search results from other folders.
+      [...messages, ...(results ?? [])].filter((m) => !m.seen && (unified ? m.mailbox.toUpperCase() === 'INBOX' : m.mailbox === path)).map((m) => m.key),
       (m) => ({ ...m, seen: true }),
     )
     setMailboxes((boxes) => boxes.map((b) => (b.path === path || (unified && b.specialUse === 'inbox') ? { ...b, unread: 0 } : b)))
@@ -757,7 +785,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     archive: { run: () => void move('archive'), enabled: hasTargets },
     trash: { run: () => void move('trash'), enabled: hasTargets },
     junk: { run: () => void move('junk'), enabled: hasTargets && box?.specialUse !== 'junk' },
-    moveTo: { run: () => openPalette('Move to '), enabled: hasTargets },
+    moveTo: { run: () => openPalette('Move to '), enabled: hasTargets && foldersFor(targets).length > 0 },
     labelAs: { run: () => openPalette('Label as '), enabled: hasTargets && labelList.length > 0 },
     undo: { run: () => void undo(), enabled: lastMove !== null },
     toggleRead: { run: () => void toggle('seen'), enabled: hasTargets },
@@ -768,7 +796,10 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     },
     selectAll: { run: () => setChecked(visible.map((m) => m.key)), enabled: visible.length > 0 },
     clearSelection: { run: () => setChecked([]), enabled: checked.length > 0 },
-    markAllRead: { run: () => void markAllRead(), enabled: (box?.unread ?? 0) > 0 || messages.some((m) => !m.seen) },
+    markAllRead: {
+      run: () => void markAllRead(),
+      enabled: (current === UNIFIED ? accounts.some((a) => a.unread > 0) : (box?.unread ?? 0) > 0) || messages.some((m) => !m.seen),
+    },
     next: { run: () => (step(1), listRef.current?.focus()) },
     previous: { run: () => (step(-1), listRef.current?.focus()) },
     goInbox: {
@@ -825,7 +856,6 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     return () => window.removeEventListener('keydown', onKey)
   }, [composer, settingsTab, paletteOpen, mainKeys])
 
-  const folders = mailboxes.filter((b) => b.path !== current)
   const paletteItems = (): PaletteItem[] => [
     ...COMMANDS.filter((c) => !c.composer && c.id !== 'palette').map((c) => {
       const command = commands[c.id as keyof typeof commands]
@@ -842,7 +872,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       run: () => (setActiveLabel(null), setCurrent(b.path)),
     })),
     ...(hasTargets
-      ? folders.map((b) => ({ id: `move:${b.path}`, title: `Move to ${b.path.toUpperCase() === 'INBOX' ? 'Inbox' : b.path}`, group: 'Move', run: () => void move({ path: b.path }) }))
+      ? foldersFor(targets).map((b) => ({ id: `move:${b.path}`, title: `Move to ${b.path.toUpperCase() === 'INBOX' ? 'Inbox' : b.path}`, group: 'Move', run: () => void move({ path: b.path }) }))
       : []),
     ...labelList.map((l) => ({
       id: `label:${l.id}`,
@@ -887,7 +917,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       { id: 'archive', label: 'Archive', accelerator: acc('archive') },
       { id: 'trash', label: box?.specialUse === 'trash' ? 'Delete Permanently' : 'Move to Trash', accelerator: acc('trash') },
       { id: 'junk', label: 'Mark as Junk', accelerator: acc('junk'), enabled: box?.specialUse !== 'junk' },
-      { label: 'Move To', submenu: folders.map((b) => ({ id: `move:${b.path}`, label: b.path.toUpperCase() === 'INBOX' ? 'Inbox' : b.path })) },
+      { label: 'Move To', enabled: foldersFor(keys).length > 0, submenu: foldersFor(keys).map((b) => ({ id: `move:${b.path}`, label: b.path.toUpperCase() === 'INBOX' ? 'Inbox' : b.path })) },
       { separator: true },
       { id: 'read', label: list.every((m) => m.seen) ? 'Mark as Unread' : 'Mark as Read', accelerator: acc('toggleRead') },
       { id: 'flag', label: list.every((m) => m.flagged) ? 'Unflag' : 'Flag', accelerator: acc('toggleFlag') },
