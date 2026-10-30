@@ -1,0 +1,105 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    env:
+      # Type checking and bundling do not need the Electron binary.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run build
+
+  mac:
+    needs: check
+    runs-on: blacksmith-6vcpu-macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.bun/install/cache
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: ${{ runner.os }}-mac-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-mac-
+      - run: bun install --frozen-lockfile
+
+      # With the MAC_CERT_P12 (base64) and MAC_CERT_PASSWORD secrets set, builds are signed with the same identity as
+      # local ones, so Keychain access survives updates. Without them the build is signed ad hoc.
+      - name: Import signing identity
+        env:
+          MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: |
+          if [ -z "$MAC_CERT_P12" ]; then
+            echo "No MAC_CERT_P12 secret; signing ad hoc."
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p ci "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p ci "$keychain"
+          echo "$MAC_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          # The certificate is self-signed, so the runner has to trust it before codesign accepts it.
+          identity=$(security find-identity -p codesigning "$keychain" | awk -F'"' 'NF > 1 { print $2; exit }')
+          security find-certificate -c "$identity" -p "$keychain" > "$RUNNER_TEMP/cert.pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$RUNNER_TEMP/cert.pem"
+          echo "LIAME_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - run: bun run dist
+      - name: Zip the app
+        id: zip
+        run: |
+          version=$(jq -r .version package.json)
+          name="Liame-$version-arm64.zip"
+          ditto -c -k --keepParent dist/mac-arm64/Liame.app "$name"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.zip.outputs.name }}
+          path: ${{ steps.zip.outputs.name }}
+
+      # A push to main releases the version in package.json once; bump it to cut the next release.
+      - name: Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v${{ steps.zip.outputs.version }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag is already released."
+          else
+            gh release create "$tag" "${{ steps.zip.outputs.name }}" --title "$tag" --target "$GITHUB_SHA" --generate-notes
+          fi
