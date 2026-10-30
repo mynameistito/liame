@@ -263,6 +263,19 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     }
   }, [])
 
+  /** Reloads the folder lists of the other accounts (or just `ids`), which All Inboxes needs for moving their mail. */
+  const loadOtherBoxes = useCallback(
+    (ids = [...contextsRef.current.keys()].filter((id) => id !== account.id)) => {
+      for (const id of ids) {
+        void api
+          .listMailboxes(id)
+          .then((boxes) => setOtherBoxes((all) => ({ ...all, [id]: boxes })))
+          .catch(() => {})
+      }
+    },
+    [account.id],
+  )
+
   /** All Inboxes syncs every account's inbox; a folder syncs itself. */
   const syncView = (path: string) => (path === UNIFIED ? api.syncInboxes() : mail.sync(path))
 
@@ -386,7 +399,10 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   useEffect(() => {
     const off = api.onEvent((event) => {
       if (currentRef.current === UNIFIED && event.type === 'mailbox-synced') return void refreshList(UNIFIED, false)
-      if (event.accountId !== account.id) return
+      if (event.accountId !== account.id) {
+        if (currentRef.current === UNIFIED && event.type === 'mailboxes-changed' && event.accountId) loadOtherBoxes([event.accountId])
+        return
+      }
       if (event.type === 'new-mail' || event.type === 'mailboxes-changed') void refreshMailboxes()
       // Conversation rows draw on other folders (a reply lands in Sent), so any finished sync rereads the open list.
       if (event.type === 'mailbox-synced' && (currentRef.current === event.mailbox || threadedFor(currentRef.current))) {
@@ -395,6 +411,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     })
     const onFocus = () => {
       void refreshMailboxes()
+      if (currentRef.current === UNIFIED) loadOtherBoxes()
       if (currentRef.current) void syncView(currentRef.current).catch(() => {})
     }
     window.addEventListener('focus', onFocus)
@@ -402,7 +419,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       off()
       window.removeEventListener('focus', onFocus)
     }
-  }, [account.id, refreshMailboxes, refreshList])
+  }, [account.id, refreshMailboxes, refreshList, loadOtherBoxes])
 
   // A clicked notification: clear anything that could hide the message, then open it once its mailbox loads.
   useEffect(() => {
@@ -558,17 +575,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
 
   /** Folders the messages can move to: their account's, other than the one they are all in. None when they span accounts. */
   useEffect(() => {
-    if (current !== UNIFIED) return
-    let live = true
-    for (const a of accounts.filter((a) => a.id !== account.id)) {
-      void api
-        .listMailboxes(a.id)
-        .then((boxes) => live && setOtherBoxes((all) => ({ ...all, [a.id]: boxes })))
-        .catch(() => {})
-    }
-    return () => {
-      live = false
-    }
+    if (current === UNIFIED) loadOtherBoxes()
   }, [current, accounts.length, account.id])
 
   const foldersFor = (keys: string[]) => {
