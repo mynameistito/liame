@@ -188,7 +188,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   /** A message to open once its mailbox has loaded (from a notification click). */
   const pendingOpen = useRef<{ path: string; uid: number } | null>(null)
   const focusSearch = useRef(false)
-  const openRef = useRef<(key: string) => void>(() => {})
+  const openRef = useRef<(key: string, row?: MessageSummary) => void>(() => {})
 
   const prefs = settings?.prefs ?? DEFAULT_PREFS
   const prefsRef = useRef(prefs)
@@ -264,7 +264,9 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         setHasMore(page.hasMore)
         setContacts(rememberContacts(page.messages.flatMap((m) => [m.from, ...m.to]), account.email))
         if (pendingOpen.current?.path === path) {
-          openRef.current(`${account.id}/${path}/${pendingOpen.current.uid}`)
+          // The new rows are not rendered yet, so hand open() the row itself.
+          const key = `${account.id}/${path}/${pendingOpen.current.uid}`
+          openRef.current(key, page.messages.find((m) => m.key === key))
           pendingOpen.current = null
         }
       } catch (err) {
@@ -395,10 +397,10 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   }, [query, current, searchRun])
 
   const open = useCallback(
-    async (key: string) => {
+    async (key: string, row?: MessageSummary) => {
       setSelected(key)
       if (detail?.key === key) return
-      const target = sourceRef.current.find((m) => m.key === key)
+      const target = sourceRef.current.find((m) => m.key === key) ?? row
       if (!target) return
       const request = ++detailRequest.current
       setDetail(null)
@@ -429,7 +431,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     },
     [detail, patchMessages],
   )
-  openRef.current = (key) => void open(key)
+  openRef.current = (key, row) => void open(key, row)
 
   /** What actions apply to: the picked messages, or else the open one. */
   const targets = useMemo(() => (checked.length > 1 ? checked : selected !== null ? [selected] : []), [checked, selected])
@@ -630,7 +632,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   )
 
   const editDraft = useCallback(() => {
-    if (!detail) return
+    if (!detail || detail.mailbox !== mailboxes.find((b) => b.specialUse === 'drafts')?.path) return
     setComposer({
       title: 'Draft',
       draft: {
@@ -646,7 +648,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         draftUid: detail.uid,
       },
     })
-  }, [detail])
+  }, [detail, mailboxes])
 
   const compose = useCallback(
     () => setComposer({ draft: { ...EMPTY_DRAFT, text: signatureBlock(prefsRef.current.signature) }, title: 'New message' }),
@@ -656,7 +658,9 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const hasTargets = targets.length > 0
   const hasDetail = detail !== null && detail.key === selected
   const single = checked.length <= 1
-  const inDrafts = box?.specialUse === 'drafts'
+  const draftsPath = mailboxes.find((b) => b.specialUse === 'drafts')?.path
+  // Whether the open message is a draft depends on its own folder, not the folder being viewed.
+  const inDrafts = Boolean(detail && draftsPath && detail.mailbox === draftsPath)
   const toggleSidebar = () => setLayout((l) => ({ ...l, sidebarHidden: !l.sidebarHidden }))
   const toggleList = () => setLayout((l) => ({ ...l, listHidden: !l.listHidden }))
   const openPalette = (query = '') => (setPaletteQuery(query), setPaletteOpen(true))
@@ -878,7 +882,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
 
   async function refreshAll() {
     setRefreshing(true)
-    await Promise.all([refreshMailboxes(), refreshList(current, false)])
+    // Sync brings in server changes; its 'mailbox-synced' event rereads the list.
+    await Promise.all([refreshMailboxes(), mail.sync(current).catch((err) => setListError(errorMessage(err)))])
     setRefreshing(false)
   }
 
@@ -1009,14 +1014,14 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
           contacts={contactList}
           onDraftSaved={() => {
             notify('Draft saved')
-            if (inDrafts) void refreshList(current, false)
+            if (box?.specialUse === 'drafts') void refreshList(current, false)
           }}
           onClose={() => setComposer(null)}
           onSent={() => {
             const wasDraft = composer.draft.draftUid !== undefined
             setComposer(null)
             notify('Sent')
-            if (wasDraft && inDrafts) void refreshList(current, false)
+            if (wasDraft && box?.specialUse === 'drafts') void refreshList(current, false)
             else if (detail) patchMessages([detail.key], (m) => ({ ...m, answered: true }))
           }}
         />

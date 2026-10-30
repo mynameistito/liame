@@ -208,7 +208,7 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
           {detail && detail.attachments.length > 0 && (
             <div className="attachments">
               {detail.attachments.map((file) => (
-                <button key={file.partId} className="attachment" onClick={() => mail.saveAttachment(mailbox, detail.uid, file.partId)} title="Save">
+                <button key={file.partId} className="attachment" onClick={() => mail.saveAttachment(detail.mailbox, detail.uid, file.partId)} title="Save">
                   <Paperclip size={15} />
                   <div style={{ minWidth: 0 }}>
                     <div className="attachment-name">{file.filename}</div>

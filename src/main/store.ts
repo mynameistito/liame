@@ -40,11 +40,15 @@ function open(): DatabaseSync {
       account TEXT PRIMARY KEY,
       mailboxes TEXT NOT NULL
     );
+    -- low/high bound the contiguous window synced from the server. Rows added by searches or local moves
+    -- can sit outside it, so they never decide where the next sync or backfill starts.
     CREATE TABLE IF NOT EXISTS mailbox_state (
       account TEXT NOT NULL,
       mailbox TEXT NOT NULL,
       uidvalidity TEXT NOT NULL,
       modseq TEXT,
+      low_uid INTEGER NOT NULL DEFAULT 0,
+      high_uid INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (account, mailbox)
     );
     -- Contentless index: rows are found by id, values come from messages.
@@ -224,16 +228,32 @@ export function removeAccount(account: string): void {
   d.prepare('DELETE FROM mailbox_state WHERE account = ?').run(account)
 }
 
-export function mailboxState(account: string, mailbox: string): { uidvalidity: string; modseq: string | null } | undefined {
-  return open().prepare('SELECT uidvalidity, modseq FROM mailbox_state WHERE account = ? AND mailbox = ?').get(account, mailbox) as
-    | { uidvalidity: string; modseq: string | null }
+export interface MailboxState {
+  uidvalidity: string
+  modseq: string | null
+  /** Lowest and highest UID of the window synced from the server; 0 before any message was synced. */
+  low: number
+  high: number
+}
+
+export function mailboxState(account: string, mailbox: string): MailboxState | undefined {
+  return open().prepare('SELECT uidvalidity, modseq, low_uid AS low, high_uid AS high FROM mailbox_state WHERE account = ? AND mailbox = ?').get(account, mailbox) as
+    | MailboxState
     | undefined
 }
 
-export function saveMailboxState(account: string, mailbox: string, uidvalidity: string, modseq: string | null): void {
+export function saveMailboxState(account: string, mailbox: string, state: MailboxState): void {
   open()
-    .prepare('INSERT INTO mailbox_state (account, mailbox, uidvalidity, modseq) VALUES (?, ?, ?, ?) ON CONFLICT (account, mailbox) DO UPDATE SET uidvalidity = excluded.uidvalidity, modseq = excluded.modseq')
-    .run(account, mailbox, uidvalidity, modseq)
+    .prepare(
+      `INSERT INTO mailbox_state (account, mailbox, uidvalidity, modseq, low_uid, high_uid) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (account, mailbox) DO UPDATE SET uidvalidity = excluded.uidvalidity, modseq = excluded.modseq, low_uid = excluded.low_uid, high_uid = excluded.high_uid`,
+    )
+    .run(account, mailbox, state.uidvalidity, state.modseq, state.low, state.high)
+}
+
+/** Cached messages from the synced window's low edge up, to compare with the server's count. */
+export function countFrom(account: string, mailbox: string, low: number): number {
+  return (open().prepare('SELECT count(*) AS n FROM messages WHERE account = ? AND mailbox = ? AND uid >= ?').get(account, mailbox, low) as { n: number }).n
 }
 
 export function uidRange(account: string, mailbox: string): { min: number; max: number; count: number } {

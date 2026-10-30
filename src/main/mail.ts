@@ -61,6 +61,8 @@ export class MailService {
   private syncing = new Map<string, Promise<void>>()
   /** Message count on the server at the last sync, to know whether older mail is still uncached. */
   private serverCount = new Map<string, number>()
+  /** Mailboxes whose previews are being filled in. */
+  private filling = new Set<string>()
 
   constructor(
     readonly account: AccountConfig,
@@ -163,20 +165,25 @@ export class MailService {
       if (state && state.uidvalidity !== validity) store.clearMailbox(id, path)
       const known = state?.uidvalidity === validity ? state : undefined
       this.serverCount.set(path, box.exists)
+      let { low, high } = known ?? { low: 0, high: 0 }
 
       const range = store.uidRange(id, path)
       if (box.exists > 0) {
         const fresh: MessageSummary[] = []
-        if (range.count === 0) {
+        if (!known || high === 0) {
           const from = Math.max(1, box.exists - INITIAL_WINDOW + 1)
           for await (const msg of client.fetch(`${from}:*`, SUMMARY_QUERY)) fresh.push(this.toSummary(path, msg))
         } else {
-          for await (const msg of client.fetch(`${range.max + 1}:*`, SUMMARY_QUERY, { uid: true })) {
+          for await (const msg of client.fetch(`${high + 1}:*`, SUMMARY_QUERY, { uid: true })) {
             // "n:*" always returns the newest message, even when nothing is newer than n.
-            if (msg.uid > range.max) fresh.push(this.toSummary(path, msg))
+            if (msg.uid > high) fresh.push(this.toSummary(path, msg))
           }
         }
         store.upsertMessages(fresh)
+        if (fresh.length) {
+          high = Math.max(high, ...fresh.map((m) => m.uid))
+          if (!low) low = Math.min(...fresh.map((m) => m.uid))
+        }
       }
 
       if (range.count > 0) {
@@ -197,28 +204,47 @@ export class MailService {
           store.cachedUids(id, path).filter((uid) => !onServer.has(uid)),
         )
       }
-      store.saveMailboxState(id, path, validity, modseq)
+      store.saveMailboxState(id, path, { uidvalidity: validity, modseq, low, high })
     })
     this.emit({ type: 'mailbox-synced', mailbox: path })
-    if (await this.fetchPreviews(path)) this.emit({ type: 'mailbox-synced', mailbox: path })
+    this.fillPreviews(path)
   }
 
   private hasOlderOnServer(path: string): boolean {
     const count = this.serverCount.get(path)
-    return count !== undefined && store.uidRange(this.account.id, path).count < count
+    const state = store.mailboxState(this.account.id, path)
+    if (count === undefined || !state || state.low <= 1) return false
+    return store.countFrom(this.account.id, path, state.low) < count
   }
 
   private async fetchOlder(path: string): Promise<void> {
-    const { min } = store.uidRange(this.account.id, path)
-    if (min <= 1) return
+    const id = this.account.id
+    const state = store.mailboxState(id, path)
+    if (!state || state.low <= 1) return
     await this.withMailbox(path, async (client) => {
-      const uids = ((await client.search({ uid: `1:${min - 1}` }, { uid: true })) || []).sort((a, b) => a - b).slice(-OLDER_BATCH)
-      if (!uids.length) return
+      const uids = ((await client.search({ uid: `1:${state.low - 1}` }, { uid: true })) || []).sort((a, b) => a - b).slice(-OLDER_BATCH)
       const older: MessageSummary[] = []
-      for await (const msg of client.fetch(uids, SUMMARY_QUERY, { uid: true })) older.push(this.toSummary(path, msg))
+      if (uids.length) for await (const msg of client.fetch(uids, SUMMARY_QUERY, { uid: true })) older.push(this.toSummary(path, msg))
       store.upsertMessages(older)
+      // Nothing below means the window now reaches the start of the mailbox.
+      store.saveMailboxState(id, path, { ...state, low: uids.length ? uids[0] : 1 })
     })
-    void this.fetchPreviews(path).then((added) => added && this.emit({ type: 'mailbox-synced', mailbox: path }))
+    this.fillPreviews(path)
+  }
+
+  /** Fills previews batch by batch in the background, refreshing the list after each, until none are missing. */
+  private fillPreviews(path: string): void {
+    if (this.filling.has(path)) return
+    this.filling.add(path)
+    void (async () => {
+      try {
+        while (await this.fetchPreviews(path)) this.emit({ type: 'mailbox-synced', mailbox: path })
+      } catch {
+        // Previews are a nicety; the next sync tries again.
+      } finally {
+        this.filling.delete(path)
+      }
+    })()
   }
 
   /** Fills in previews for the newest cached messages that lack one. Returns whether any were added. */
@@ -295,13 +321,13 @@ export class MailService {
   }
 
   async setFlags(path: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }): Promise<void> {
-    if (flags.seen !== undefined) store.setFlag(this.account.id, path, uids, 'seen', flags.seen)
-    if (flags.flagged !== undefined) store.setFlag(this.account.id, path, uids, 'flagged', flags.flagged)
     await this.withMailbox(path, async (client) => {
-      for (const [flag, on] of [['\\Seen', flags.seen], ['\\Flagged', flags.flagged]] as const) {
+      for (const [flag, name, on] of [['\\Seen', 'seen', flags.seen], ['\\Flagged', 'flagged', flags.flagged]] as const) {
         if (on === undefined) continue
         if (on) await client.messageFlagsAdd(uids, [flag], { uid: true })
         else await client.messageFlagsRemove(uids, [flag], { uid: true })
+        // Cached only once the server took it, so a failure cannot leave the local copy disagreeing.
+        store.setFlag(this.account.id, path, uids, name, on)
       }
     })
   }
