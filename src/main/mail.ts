@@ -350,7 +350,8 @@ export class MailService {
       async (client) => {
         const msg = await client.fetchOne(String(uid), { ...SUMMARY_QUERY, source: true }, { uid: true })
         if (!msg || !msg.source) throw new Error('Message not found. It may have been moved or deleted.')
-        if (msg.source.length <= MAX_CACHED_BODY) store.saveBody(this.account.id, path, uid, msg.envelope?.messageId, msg.source)
+        const validity = String(client.mailbox ? client.mailbox.uidValidity : '')
+        if (msg.source.length <= MAX_CACHED_BODY) store.saveBody(this.account.id, path, uid, validity, msg.envelope?.messageId, msg.source)
         return this.toDetail(path, uid, this.toSummary(path, msg), await simpleParser(msg.source))
       },
       'reader',
@@ -385,12 +386,12 @@ export class MailService {
           if ((msg.size ?? Infinity) <= MAX_CACHED_BODY) small.push(msg.uid)
         }
         if (!small.length) return
+        const validity = String(client.mailbox ? client.mailbox.uidValidity : '')
         for await (const msg of client.fetch(small, { uid: true, envelope: true, source: true }, { uid: true })) {
-          if (msg.source) store.saveBody(id, path, msg.uid, msg.envelope?.messageId, msg.source)
+          if (msg.source) store.saveBody(id, path, msg.uid, validity, msg.envelope?.messageId, msg.source)
         }
       })
     }
-    store.pruneBodies()
   }
 
   async setFlags(path: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }): Promise<void> {

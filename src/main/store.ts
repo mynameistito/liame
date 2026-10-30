@@ -324,17 +324,22 @@ export function getBody(account: string, mailbox: string, uid: number): Buffer |
   return row ? Buffer.from(row.source) : null
 }
 
+let bodiesSaved = 0
+
 /**
- * Keeps a message's raw source, but only when `messageId` (read from the fetched message itself) is the one
- * stored for that UID now, so a download that finishes after the folder changed cannot land on another message.
+ * Keeps a message's raw source, but only when it was fetched under the mailbox's current UIDVALIDITY and
+ * `messageId` (read from the fetched message itself) is the one stored for that UID now, so a download that
+ * finishes after the folder changed cannot land on another message.
  */
-export function saveBody(account: string, mailbox: string, uid: number, messageId: string | undefined, source: Buffer): void {
+export function saveBody(account: string, mailbox: string, uid: number, uidValidity: string, messageId: string | undefined, source: Buffer): void {
+  if (mailboxState(account, mailbox)?.uidvalidity !== uidValidity) return
   const d = open()
   const row = d.prepare('SELECT id, message_id FROM messages WHERE account = ? AND mailbox = ? AND uid = ?').get(account, mailbox, uid) as
     | { id: number; message_id: string | null }
     | undefined
   if (!row?.message_id || !messageId || row.message_id.toLowerCase() !== messageId.toLowerCase()) return
   d.prepare('INSERT OR REPLACE INTO bodies (id, message_id, source, cached_at) VALUES (?, ?, ?, ?)').run(row.id, row.message_id.toLowerCase(), source, Date.now())
+  if (++bodiesSaved % 50 === 0) pruneBodies()
 }
 
 /** Which of the newest `limit` messages of a mailbox have no cached source yet. */
