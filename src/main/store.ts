@@ -339,7 +339,8 @@ export function saveBody(account: string, mailbox: string, uid: number, uidValid
     | undefined
   if (!row?.message_id || !messageId || row.message_id.toLowerCase() !== messageId.toLowerCase()) return
   d.prepare('INSERT OR REPLACE INTO bodies (id, message_id, source, cached_at) VALUES (?, ?, ?, ?)').run(row.id, row.message_id.toLowerCase(), source, Date.now())
-  if (++bodiesSaved % 50 === 0) pruneBodies()
+  // The first save of each run prunes too, so short sessions cannot grow the cache past the cap.
+  if (bodiesSaved++ % 50 === 0) pruneBodies()
 }
 
 /** Which of the newest `limit` messages of a mailbox have no cached source yet. */
