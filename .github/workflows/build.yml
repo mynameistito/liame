@@ -1,0 +1,132 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Runs on main are not cancelled, so a release is never cut off halfway.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    env:
+      # Type checking and bundling do not need the Electron binary.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run build
+
+  mac:
+    needs: check
+    runs-on: blacksmith-6vcpu-macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.bun/install/cache
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: ${{ runner.os }}-mac-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-mac-
+      - run: bun install --frozen-lockfile
+
+      # With the MAC_CERT_P12 (base64) and MAC_CERT_PASSWORD secrets set, builds are signed with the same identity as
+      # local ones, so Keychain access survives updates. Without them the build is signed ad hoc.
+      - name: Import signing identity
+        env:
+          MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: |
+          if [ -z "$MAC_CERT_P12" ]; then
+            echo "No MAC_CERT_P12 secret; signing ad hoc."
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p ci "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p ci "$keychain"
+          echo "$MAC_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          # The certificate is self-signed, so the runner has to trust it before codesign accepts it.
+          identity=$(security find-identity -p codesigning "$keychain" | awk -F'"' 'NF > 1 { print $2; exit }')
+          security find-certificate -c "$identity" -p "$keychain" > "$RUNNER_TEMP/cert.pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$RUNNER_TEMP/cert.pem"
+          security find-identity -v -p codesigning | grep -qF "\"$identity\"" || { echo "::error::$identity is not a valid signing identity (expired?)"; exit 1; }
+          echo "LIAME_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - run: bun run dist
+        env:
+          # electron-builder skips signing on pull requests unless told otherwise.
+          CSC_FOR_PULL_REQUEST: 'true'
+      - name: Check the signature
+        run: |
+          app=dist/mac-arm64/Liame.app
+          codesign --verify --deep --strict "$app"
+          signer=$(codesign -dvv "$app" 2>&1 | sed -n 's/^Authority=//p' | head -1)
+          echo "Signed by: ${signer:-ad hoc}"
+          if [ -n "$LIAME_SIGN_IDENTITY" ] && [ "$signer" != "$LIAME_SIGN_IDENTITY" ]; then
+            echo "::error::Expected a signature from $LIAME_SIGN_IDENTITY"
+            exit 1
+          fi
+      - name: Zip the app
+        id: zip
+        run: |
+          version=$(jq -r .version package.json)
+          name="Liame-$version-arm64.zip"
+          ditto -c -k --keepParent dist/mac-arm64/Liame.app "$name"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.zip.outputs.name }}
+          path: ${{ steps.zip.outputs.name }}
+
+      # A push to main releases the version in package.json once; bump it to cut the next release.
+      - name: Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v${{ steps.zip.outputs.version }}"
+          draft=$(gh release view "$tag" --json isDraft -q .isDraft 2>/dev/null || echo missing)
+          if [ "$draft" = false ]; then
+            echo "$tag is already released."
+          elif [ "$draft" = true ]; then
+            # An earlier run stopped partway; finish it.
+            gh release upload "$tag" "${{ steps.zip.outputs.name }}" --clobber
+            gh release edit "$tag" --draft=false --target "$GITHUB_SHA"
+          else
+            # Exit status 2 means no such tag; anything else (the tag exists, or the lookup failed) stops the release.
+            status=0
+            git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null || status=$?
+            if [ "$status" != 2 ]; then
+              echo "::error::Tag $tag already exists without a release, or the lookup failed (status $status)."
+              exit 1
+            fi
+            gh release create "$tag" "${{ steps.zip.outputs.name }}" --title "$tag" --target "$GITHUB_SHA" --generate-notes
+          fi
