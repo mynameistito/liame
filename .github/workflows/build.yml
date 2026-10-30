@@ -9,7 +9,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Runs on main are not cancelled, so a release is never cut off halfway.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
@@ -75,9 +76,23 @@ jobs:
           identity=$(security find-identity -p codesigning "$keychain" | awk -F'"' 'NF > 1 { print $2; exit }')
           security find-certificate -c "$identity" -p "$keychain" > "$RUNNER_TEMP/cert.pem"
           sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$RUNNER_TEMP/cert.pem"
+          security find-identity -v -p codesigning | grep -qF "\"$identity\"" || { echo "::error::$identity is not a valid signing identity (expired?)"; exit 1; }
           echo "LIAME_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
 
       - run: bun run dist
+        env:
+          # electron-builder skips signing on pull requests unless told otherwise.
+          CSC_FOR_PULL_REQUEST: 'true'
+      - name: Check the signature
+        run: |
+          app=dist/mac-arm64/Liame.app
+          codesign --verify --deep --strict "$app"
+          signer=$(codesign -dv "$app" 2>&1 | sed -n 's/^Authority=//p' | head -1)
+          echo "Signed by: ${signer:-ad hoc}"
+          if [ -n "$LIAME_SIGN_IDENTITY" ] && [ "$signer" != "$LIAME_SIGN_IDENTITY" ]; then
+            echo "::error::Expected a signature from $LIAME_SIGN_IDENTITY"
+            exit 1
+          fi
       - name: Zip the app
         id: zip
         run: |
@@ -98,8 +113,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="v${{ steps.zip.outputs.version }}"
-          if gh release view "$tag" >/dev/null 2>&1; then
+          draft=$(gh release view "$tag" --json isDraft -q .isDraft 2>/dev/null || echo missing)
+          if [ "$draft" = false ]; then
             echo "$tag is already released."
+          elif [ "$draft" = true ]; then
+            # An earlier run stopped partway; finish it.
+            gh release upload "$tag" "${{ steps.zip.outputs.name }}" --clobber
+            gh release edit "$tag" --draft=false
           else
             gh release create "$tag" "${{ steps.zip.outputs.name }}" --title "$tag" --target "$GITHUB_SHA" --generate-notes
           fi
