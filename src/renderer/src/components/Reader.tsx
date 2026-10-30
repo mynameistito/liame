@@ -51,6 +51,10 @@ interface Props {
   onEditDraft: () => void
   /** Set when several messages are picked; the reader then shows actions for all of them. */
   bulk?: BulkActions
+  /** The whole conversation, oldest first, when it holds more than the open message. */
+  thread: MessageSummary[] | null
+  expanded: Record<string, MessageDetail | 'loading'>
+  onToggleMessage: (key: string) => void
 }
 
 export interface BulkActions {
@@ -126,6 +130,12 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
 
   const message = detail ?? summary
   const recipients = [...message.to, ...(detail?.cc ?? [])]
+  // Other messages of the conversation sit around the open one in date order, collapsed until clicked.
+  const others = actions.thread?.filter((m) => m.key !== message.key) ?? []
+  const openedAt = Date.parse(message.date)
+  const card = (m: MessageSummary) => (
+    <ThreadCard key={m.key} message={m} body={actions.expanded[m.key]} darken={darken} blockImages={blockImages} onToggle={() => actions.onToggleMessage(m.key)} />
+  )
 
   return (
     <main className="pane reader">
@@ -158,6 +168,7 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
       <div className="reader-scroll">
         <article className="reader-inner">
           <h1 className="subject">{message.subject}</h1>
+          {others.filter((m) => Date.parse(m.date) <= openedAt).map(card)}
           <div className="sender">
             <div className="avatar" style={avatarColor(message.from)}>
               {initials(message.from)}
@@ -219,6 +230,8 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
             </div>
           )}
 
+          {others.filter((m) => Date.parse(m.date) > openedAt).map(card)}
+
           {detail && (
             <div className="reply-bar">
               {actions.inDrafts && (
@@ -243,6 +256,33 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
         </article>
       </div>
     </main>
+  )
+}
+
+function ThreadCard(props: { message: MessageSummary; body?: MessageDetail | 'loading'; darken: boolean; blockImages: boolean; onToggle: () => void }) {
+  const { message: m, body } = props
+  const open = body !== undefined
+  return (
+    <div className={`thread-card ${open ? 'open' : ''}`}>
+      <button className="thread-card-head" onClick={props.onToggle}>
+        <div className="avatar small" style={avatarColor(m.from)}>
+          {initials(m.from)}
+        </div>
+        <div className="thread-card-main">
+          <div className="thread-card-top">
+            <span className="thread-card-name">{displayName(m.from)}</span>
+            <span className="thread-card-date">{longDate(m.date)}</span>
+          </div>
+          {!open && <div className="thread-card-preview">{m.preview || m.subject}</div>}
+        </div>
+      </button>
+      {body === 'loading' && <LoaderCircle size={14} className="spin" color="var(--text-3)" />}
+      {body && body !== 'loading' && (
+        <div className="thread-card-body">
+          {body.html ? <EmailFrame html={body.html} darken={props.darken} blockImages={props.blockImages} /> : <PlainText text={body.text ?? ''} />}
+        </div>
+      )}
+    </div>
   )
 }
 

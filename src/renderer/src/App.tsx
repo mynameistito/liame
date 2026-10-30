@@ -51,6 +51,7 @@ const DEFAULT_PREFS: Prefs = {
   density: 'comfortable',
   zoom: 1,
   darkenEmails: true,
+  conversations: true,
 }
 
 /** A message to show after switching to its account, e.g. from a notification click. */
@@ -145,6 +146,10 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const [detail, setDetail] = useState<MessageDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
+  /** The open conversation, oldest first, when it has more than the open message. */
+  const [thread, setThread] = useState<MessageSummary[] | null>(null)
+  /** Bodies of conversation messages the reader has expanded. */
+  const [expanded, setExpanded] = useState<Record<string, MessageDetail | 'loading'>>({})
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<MessageSummary[] | null>(null)
   const [searchRun, setSearchRun] = useState(0)
@@ -246,6 +251,9 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     }
   }, [])
 
+  /** Conversations group every folder but Drafts, where each draft stands alone. */
+  const threadedFor = (path: string) => prefsRef.current.conversations && mailboxesRef.current.find((b) => b.path === path)?.specialUse !== 'drafts'
+
   /** Rereads the local copy, keeping as many rows as are loaded. Labels the renderer already knows survive. */
   const refreshList = useCallback(
     async (path: string, reset: boolean) => {
@@ -257,7 +265,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       setListError('')
       try {
         const loaded = reset ? 0 : messagesRef.current.length
-        const page = await mail.listMessages(path, 0, Math.max(50, loaded))
+        const page = await mail.listMessages(path, 0, Math.max(50, loaded), threadedFor(path))
         if (currentRef.current !== path) return
         setMessages((old) => {
           const labels = new Map(old.map((m) => [m.key, m.label]))
@@ -289,7 +297,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     loadingMore.current = true
     const path = current
     try {
-      const page = await mail.listMessages(path, messagesRef.current.length)
+      const page = await mail.listMessages(path, messagesRef.current.length, undefined, threadedFor(path))
       if (currentRef.current !== path) return
       setMessages((old) => [...old, ...page.messages.filter((m) => !old.some((o) => o.key === m.key))])
       setHasMore(page.hasMore)
@@ -408,14 +416,20 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       if (!target) return
       const request = ++detailRequest.current
       setDetail(null)
+      setThread(null)
+      setExpanded({})
       setDetailError('')
       setDetailLoading(true)
       setDarken(prefsRef.current.darkenEmails)
       setImagesAllowed(null)
       try {
-        const message = await mail.getMessage(target.mailbox, target.uid)
+        const [message, conversation] = await Promise.all([
+          mail.getMessage(target.mailbox, target.uid),
+          target.thread && (target.threadCount ?? 1) > 1 ? mail.getThread(target.thread) : Promise.resolve(null),
+        ])
         if (request !== detailRequest.current) return
         setDetail(message)
+        setThread(conversation && conversation.length > 1 ? conversation : null)
         const { markRead } = prefsRef.current
         if (!message.seen && markRead !== 'never') {
           if (markRead === 'delay') {
@@ -425,7 +439,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
           }
           patchMessages([key], (m) => ({ ...m, seen: true }))
           setMailboxes((boxes) => boxes.map((b) => (b.path === target.mailbox ? { ...b, unread: Math.max(0, b.unread - 1) } : b)))
-          await mail.setFlags(target.mailbox, [target.uid], { seen: true })
+          // Opening a conversation reads all of it.
+          await mail.setFlags(target.mailbox, target.threadUids ?? [target.uid], { seen: true })
         }
       } catch (err) {
         if (request === detailRequest.current) setDetailError(errorMessage(err))
@@ -475,10 +490,10 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     [visible, selected, open],
   )
 
-  /** Groups messages by the folder they live in, since the server acts per folder. */
+  /** UIDs to act on, grouped by folder (the server acts per folder). A conversation row stands for all its messages there. */
   const byMailbox = (keys: string[]) => {
-    const groups = new Map<string, MessageSummary[]>()
-    for (const m of rowsFor(keys)) groups.set(m.mailbox, [...(groups.get(m.mailbox) ?? []), m])
+    const groups = new Map<string, number[]>()
+    for (const m of rowsFor(keys)) groups.set(m.mailbox, [...(groups.get(m.mailbox) ?? []), ...(m.threadUids ?? [m.uid])])
     return groups
   }
 
@@ -512,12 +527,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       }
       try {
         const moved: MoveResult[] = []
-        for (const [mailbox, list] of groups) {
-          const result = await mail.move(
-            mailbox,
-            list.map((m) => m.uid),
-            target,
-          )
+        for (const [mailbox, uids] of groups) {
+          const result = await mail.move(mailbox, uids, target)
           if (result) moved.push(result)
         }
         // Undo only when every folder's move can be reversed exactly.
@@ -581,13 +592,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         )
       }
       try {
-        for (const [mailbox, items] of groups) {
-          await mail.setFlags(
-            mailbox,
-            items.map((m) => m.uid),
-            { [flag]: value },
-          )
-        }
+        for (const [mailbox, uids] of groups) await mail.setFlags(mailbox, uids, { [flag]: value })
       } catch (err) {
         notify(errorMessage(err))
       }
@@ -639,6 +644,23 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     },
     [source, targets, patchMessages],
   )
+
+  const toggleExpanded = useCallback(async (key: string) => {
+    const m = thread?.find((x) => x.key === key)
+    if (!m) return
+    if (expanded[key]) {
+      setExpanded(({ [key]: _gone, ...rest }) => rest)
+      return
+    }
+    setExpanded((e) => ({ ...e, [key]: 'loading' }))
+    try {
+      const message = await mail.getMessage(m.mailbox, m.uid)
+      setExpanded((e) => (key in e ? { ...e, [key]: message } : e))
+    } catch (err) {
+      setExpanded(({ [key]: _gone, ...rest }) => rest)
+      notify(errorMessage(err))
+    }
+  }, [thread, expanded, notify])
 
   const editDraft = useCallback(() => {
     if (!detail || detail.mailbox !== mailboxes.find((b) => b.specialUse === 'drafts')?.path) return
@@ -988,6 +1010,9 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         onShowList={() => (layout.listHidden ? toggleList() : setAssistantOpen(false))}
         inDrafts={inDrafts}
         onEditDraft={editDraft}
+        thread={detail?.key === selected ? thread : null}
+        expanded={expanded}
+        onToggleMessage={(key) => void toggleExpanded(key)}
         bulk={
           checked.length > 1
             ? {
@@ -1080,6 +1105,10 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
             // Labels may have changed; let the inbox be labeled again against the new set.
             classifying.current.clear()
             setMessages((list) => list.map((m) => ({ ...m, label: undefined })))
+            if (next.prefs.conversations !== prefsRef.current.conversations) {
+              prefsRef.current = next.prefs
+              void refreshList(currentRef.current, true)
+            }
             notify('Settings saved')
           }}
         />

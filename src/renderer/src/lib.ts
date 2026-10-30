@@ -13,7 +13,8 @@ export const api = window.liame
 export function mailApi(accountId: string) {
   return {
     listMailboxes: () => api.listMailboxes(accountId),
-    listMessages: (mailbox: string, offset?: number, limit?: number) => api.listMessages(accountId, mailbox, offset, limit),
+    listMessages: (mailbox: string, offset?: number, limit?: number, threads?: boolean) => api.listMessages(accountId, mailbox, offset, limit, threads),
+    getThread: (thread: string) => api.getThread(accountId, thread),
     sync: (mailbox: string) => api.sync(accountId, mailbox),
     search: (mailbox: string, query: string) => api.search(accountId, mailbox, query),
     searchLocal: (query: string) => api.searchLocal([accountId], query),

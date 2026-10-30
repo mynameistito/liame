@@ -134,7 +134,13 @@ interface RowProps {
 }
 
 function Row({ message: m, label, folder, selected, checked, showRecipient, onPick, onMenu }: RowProps) {
-  const who = showRecipient ? `To: ${m.to.map(displayName).join(', ') || 'No recipients'}` : displayName(m.from)
+  const conversation = (m.threadCount ?? 1) > 1
+  // A conversation row names everyone in it; a single message names its sender (or recipients in Sent).
+  const who = showRecipient
+    ? `To: ${m.to.map(displayName).join(', ') || 'No recipients'}`
+    : conversation && m.participants?.length
+      ? m.participants.map((name) => name.split(/\s+/)[0]).join(', ')
+      : displayName(m.from)
   return (
     <button
       className={`row ${m.seen ? '' : 'unread'} ${selected ? 'selected' : ''} ${checked ? 'checked' : ''}`}
@@ -152,7 +158,10 @@ function Row({ message: m, label, folder, selected, checked, showRecipient, onPi
     >
       {!m.seen && <span className="row-dot" />}
       <div className="row-top">
-        <span className="row-from">{who}</span>
+        <span className="row-from">
+          {who}
+          {conversation && <span className="thread-count">{m.threadCount}</span>}
+        </span>
         <span className="row-meta">
           {m.hasAttachments && <Paperclip size={12} />}
           {m.flagged && <Flag size={12} className="flag" fill="currentColor" />}

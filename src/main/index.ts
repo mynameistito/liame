@@ -284,7 +284,10 @@ function registerIpc(): void {
     }
     return boxes
   })
-  handle('listMessages', (id: string, path: string, offset?: number, limit?: number) => service(id).listMessages(path, offset, limit))
+  handle('listMessages', (id: string, path: string, offset?: number, limit?: number, threads?: boolean) =>
+    service(id).listMessages(path, offset, limit, threads),
+  )
+  handle('getThread', (id: string, thread: string) => service(id).getThread(thread))
   handle('sync', (id: string, path: string) => service(id).sync(path))
   handle('search', (id: string, path: string, query: string) => service(id).search(path, query))
   handle('searchLocal', (ids: string[], query: string) => store.search(ids.filter((id) => services.has(id)), query))

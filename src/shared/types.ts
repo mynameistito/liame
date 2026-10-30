@@ -60,6 +60,12 @@ export interface MessageSummary {
   hasAttachments: boolean
   preview?: string
   label?: string | null
+  /** Set on conversation rows: every message of the conversation in this mailbox, newest first. */
+  threadUids?: number[]
+  /** Messages in the whole conversation across Inbox, Sent, Archive and other folders (not Trash or Spam). */
+  threadCount?: number
+  /** Distinct sender names in the conversation, oldest first. */
+  participants?: string[]
 }
 
 export interface MessagePage {
@@ -154,6 +160,8 @@ export interface Prefs {
   density: 'comfortable' | 'compact' | 'minimal'
   zoom: number
   darkenEmails: boolean
+  /** Group messages that belong to one conversation into a single row. */
+  conversations: boolean
 }
 
 /** Command id to key combos, only for commands the user rebound. */
@@ -237,8 +245,10 @@ export interface LiameApi {
   /** A notification click that arrived while no window was open. */
   takePendingOpen(): Promise<MailEvent | null>
   listMailboxes(accountId: string): Promise<Mailbox[]>
-  /** Reads the local store; the first call for a mailbox waits for its initial sync. */
-  listMessages(accountId: string, mailbox: string, offset?: number, limit?: number): Promise<MessagePage>
+  /** Reads the local store; the first call for a mailbox waits for its initial sync. With threads, one row per conversation. */
+  listMessages(accountId: string, mailbox: string, offset?: number, limit?: number, threads?: boolean): Promise<MessagePage>
+  /** Every message of a conversation across the account's folders (not Trash or Spam), oldest first. */
+  getThread(accountId: string, thread: string): Promise<MessageSummary[]>
   /** Brings the local copy of a mailbox up to date; a 'mailbox-synced' event follows. */
   sync(accountId: string, mailbox: string): Promise<void>
   /** Server-side search in one mailbox (finds body text the local index does not have). */
