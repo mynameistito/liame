@@ -7,11 +7,11 @@ const call =
     ipcRenderer.invoke(`liame:${channel}`, ...args)
 
 const api: LiameApi = {
-  getAccount: call('getAccount'),
-  getStatus: call('getStatus'),
+  listAccounts: call('listAccounts'),
   saveAccount: call('saveAccount'),
   testAccount: call('testAccount'),
-  signOut: call('signOut'),
+  removeAccount: call('removeAccount'),
+  takePendingOpen: call('takePendingOpen'),
   listMailboxes: call('listMailboxes'),
   listMessages: call('listMessages'),
   previews: call('previews'),

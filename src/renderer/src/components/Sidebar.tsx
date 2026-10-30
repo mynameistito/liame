@@ -10,6 +10,7 @@ import {
   Mails,
   OctagonAlert,
   PanelLeftClose,
+  Plus,
   RefreshCw,
   Send,
   Settings as SettingsIcon,
@@ -17,7 +18,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
-import type { LabelDef, Mailbox, MailEvent, PublicAccount, SpecialUse } from '../../../shared/types'
+import type { AccountSummary, LabelDef, Mailbox, MailEvent, MailProvider, PublicAccount, SpecialUse } from '../../../shared/types'
 
 const ICONS: Record<SpecialUse, LucideIcon> = {
   inbox: Inbox,
@@ -49,11 +50,17 @@ interface Props {
   onSelect: (path: string) => void
   onCompose: () => void
   onRefresh: () => void
-  onSignOut: () => void
+  accounts: AccountSummary[]
+  activeAccount: string
+  onSwitchAccount: (id: string) => void
+  onAddAccount: () => void
+  onRemoveAccount: (id: string) => void
 }
 
+const PROVIDER_NAMES: Record<MailProvider, string> = { gmail: 'Gmail', zoho: 'Zoho', imap: 'IMAP' }
+
 export function Sidebar(props: Props) {
-  const { account, mailboxes, current, status, refreshing, labels, labelCounts, activeLabel, collapsed, onToggleCollapsed } = props
+  const { account, mailboxes, current, refreshing, labels, labelCounts, activeLabel, collapsed, onToggleCollapsed } = props
   const special = mailboxes.filter((box) => box.specialUse)
   const folders = mailboxes.filter((box) => !box.specialUse)
   const isOpen = (key: string) => !collapsed.includes(key)
@@ -120,18 +127,30 @@ export function Sidebar(props: Props) {
         )}
       </nav>
 
-      <div className="account">
-        <span className={`status-dot ${status ?? ''}`} title={status === 'online' ? 'Connected' : status} />
-        <div className="account-text">
-          <div className="account-name">{account.name}</div>
-          <div className="account-email">{account.email}</div>
+      <div className="accounts">
+        {props.accounts.map((a) => (
+          <button key={a.id} className={`account ${a.id === props.activeAccount ? 'active' : ''}`} onClick={() => props.onSwitchAccount(a.id)}>
+            <span className={`status-dot ${a.status}`} title={a.status === 'online' ? 'Connected' : a.status} />
+            <div className="account-text">
+              <div className="account-name">{a.email}</div>
+              <div className="account-email">{PROVIDER_NAMES[a.provider]}</div>
+            </div>
+            {/* The open account's unread count is already on Inbox. */}
+            {a.id !== props.activeAccount && a.unread > 0 && <span className="count">{a.unread}</span>}
+          </button>
+        ))}
+        <div className="account-actions">
+          <button className="add-account" onClick={props.onAddAccount}>
+            <Plus size={13} /> Add account
+          </button>
+          <span className="spacer" />
+          <button className="icon-button" title="Settings" onClick={props.onSettings}>
+            <SettingsIcon size={14} />
+          </button>
+          <button className="icon-button" title={`Remove ${account.email}`} onClick={() => props.onRemoveAccount(props.activeAccount)}>
+            <LogOut size={14} />
+          </button>
         </div>
-        <button className="icon-button" title="Settings" onClick={props.onSettings}>
-          <SettingsIcon size={14} />
-        </button>
-        <button className="icon-button" title="Sign out" onClick={props.onSignOut}>
-          <LogOut size={14} />
-        </button>
       </div>
     </aside>
   )

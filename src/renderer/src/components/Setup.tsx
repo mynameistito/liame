@@ -1,6 +1,6 @@
 import { LoaderCircle } from 'lucide-react'
 import { useState } from 'react'
-import type { AccountConfig, PublicAccount, ZohoRegion } from '../../../shared/types'
+import type { AccountInput, MailProvider, PublicAccount, ZohoRegion } from '../../../shared/types'
 import { api, errorMessage } from '../lib'
 
 const REGIONS: Array<{ id: ZohoRegion; label: string }> = [
@@ -12,8 +12,14 @@ const REGIONS: Array<{ id: ZohoRegion; label: string }> = [
   { id: 'ca', label: 'Canada (zohocloud.ca)' },
 ]
 
+const PROVIDERS: Array<[MailProvider, string]> = [
+  ['gmail', 'Gmail'],
+  ['zoho', 'Zoho'],
+  ['imap', 'Other IMAP'],
+]
+
 /** Zoho uses imappro/smtppro for custom-domain (organization) mailboxes, plain imap/smtp for @zohomail ones. */
-function hostsFor(email: string, region: ZohoRegion) {
+function zohoHosts(email: string, region: ZohoRegion) {
   const domain = email.split('@')[1]?.toLowerCase() ?? ''
   const personal = /^zoho(mail)?\./.test(domain)
   const base = region === 'ca' ? 'zohocloud.ca' : `zoho.${region}`
@@ -32,29 +38,49 @@ function guessRegion(): ZohoRegion {
   return 'com'
 }
 
-export function Setup({ onDone }: { onDone: (account: PublicAccount) => void }) {
+function guessProvider(email: string): MailProvider | null {
+  const domain = email.split('@')[1]?.toLowerCase() ?? ''
+  if (domain === 'gmail.com' || domain === 'googlemail.com') return 'gmail'
+  if (/^zoho(mail)?\./.test(domain)) return 'zoho'
+  return null
+}
+
+interface Props {
+  onDone: (account: PublicAccount) => void
+  /** Present when adding another account, so there is a way back to the mailbox. */
+  onCancel?: () => void
+}
+
+export function Setup({ onDone, onCancel }: Props) {
+  const [provider, setProvider] = useState<MailProvider>('gmail')
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [region, setRegion] = useState<ZohoRegion>(guessRegion)
-  const [override, setOverride] = useState<{ imap?: string; smtp?: string }>({})
+  const [override, setOverride] = useState<{ imap?: string; smtp?: string; imapPort?: string; smtpPort?: string }>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
-  const auto = hostsFor(email, region)
+  const auto =
+    provider === 'gmail' ? { imap: 'imap.gmail.com', smtp: 'smtp.gmail.com' } : provider === 'zoho' ? zohoHosts(email, region) : { imap: '', smtp: '' }
   const imapHost = override.imap ?? auto.imap
   const smtpHost = override.smtp ?? auto.smtp
+  const imapPort = Number(override.imapPort ?? 993)
+  const smtpPort = Number(override.smtpPort ?? 465)
 
   async function submit(event: { preventDefault(): void }) {
     event.preventDefault()
     setBusy(true)
     setError('')
-    const account: AccountConfig = {
+    const account: AccountInput = {
+      provider,
       name: name.trim() || email.split('@')[0],
       email: email.trim(),
-      password,
-      imap: { host: imapHost.trim(), port: 993, secure: true },
-      smtp: { host: smtpHost.trim(), port: 465, secure: true },
+      // Google shows app passwords in groups of four ("abcd efgh ..."); the spaces are not part of it.
+      password: provider === 'gmail' ? password.replace(/\s+/g, '') : password,
+      // Only the STARTTLS ports (IMAP 143, SMTP 587/25) start in plain text and upgrade; every other port is TLS from the start.
+      imap: { host: imapHost.trim(), port: imapPort, secure: imapPort !== 143 },
+      smtp: { host: smtpHost.trim(), port: smtpPort, secure: smtpPort !== 587 && smtpPort !== 25 },
     }
     try {
       const result = await api.testAccount(account)
@@ -73,7 +99,17 @@ export function Setup({ onDone }: { onDone: (account: PublicAccount) => void }) 
         <h1 className="wordmark">
           liame<span>.</span>
         </h1>
-        <p className="setup-lead">Connect your Zoho mailbox. Your password is encrypted with your macOS Keychain and stays on this Mac.</p>
+        <p className="setup-lead">
+          {onCancel ? 'Add another mailbox.' : 'Connect your mailbox.'} Your password is encrypted with your macOS Keychain and stays on this Mac.
+        </p>
+
+        <div className="segmented setup-providers">
+          {PROVIDERS.map(([id, label]) => (
+            <button key={id} type="button" className={provider === id ? 'on' : ''} onClick={() => (setProvider(id), setOverride({}))}>
+              {label}
+            </button>
+          ))}
+        </div>
 
         {error && <div className="error-banner">{error}</div>}
 
@@ -83,42 +119,80 @@ export function Setup({ onDone }: { onDone: (account: PublicAccount) => void }) 
         </label>
         <label className="setup-field">
           <span>Email address</span>
-          <input type="email" required autoFocus value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@domain.com" />
+          <input
+            type="email"
+            required
+            autoFocus
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            // Typing a gmail.com or zoho address picks the matching provider.
+            onBlur={() => {
+              const guess = guessProvider(email)
+              if (guess && guess !== provider) (setProvider(guess), setOverride({}))
+            }}
+            placeholder={provider === 'gmail' ? 'you@gmail.com' : 'you@domain.com'}
+          />
         </label>
         <label className="setup-field">
-          <span>App password</span>
+          <span>{provider === 'imap' ? 'Password' : 'App password'}</span>
           <input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} />
-          <small>
-            Create one in Zoho Mail under My Account, Security, App Passwords. IMAP access must be on in Mail Settings.
-          </small>
+          {provider === 'gmail' && (
+            <small>
+              Gmail needs an app password, not your Google password. Turn on 2-Step Verification, then create one at{' '}
+              <a href="https://myaccount.google.com/apppasswords" onClick={(e) => (e.preventDefault(), api.openExternal('https://myaccount.google.com/apppasswords'))}>
+                myaccount.google.com/apppasswords
+              </a>
+              .
+            </small>
+          )}
+          {provider === 'zoho' && <small>Create one in Zoho Mail under My Account, Security, App Passwords. IMAP access must be on in Mail Settings.</small>}
         </label>
-        <label className="setup-field">
-          <span>Data center</span>
-          <select value={region} onChange={(e) => setRegion(e.target.value as ZohoRegion)}>
-            {REGIONS.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        {provider === 'zoho' && (
+          <label className="setup-field">
+            <span>Data center</span>
+            <select value={region} onChange={(e) => setRegion(e.target.value as ZohoRegion)}>
+              {REGIONS.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
-        <details className="setup-advanced">
+        <details className="setup-advanced" open={provider === 'imap'}>
           <summary>Servers</summary>
-          <label className="setup-field">
-            <span>IMAP (SSL, port 993)</span>
-            <input value={imapHost} onChange={(e) => setOverride((o) => ({ ...o, imap: e.target.value }))} />
-          </label>
-          <label className="setup-field">
-            <span>SMTP (SSL, port 465)</span>
-            <input value={smtpHost} onChange={(e) => setOverride((o) => ({ ...o, smtp: e.target.value }))} />
-          </label>
+          <div className="setup-row">
+            <label className="setup-field">
+              <span>IMAP server</span>
+              <input value={imapHost} required onChange={(e) => setOverride((o) => ({ ...o, imap: e.target.value }))} placeholder="imap.example.com" />
+            </label>
+            <label className="setup-field">
+              <span>Port</span>
+              <input value={override.imapPort ?? '993'} inputMode="numeric" onChange={(e) => setOverride((o) => ({ ...o, imapPort: e.target.value }))} />
+            </label>
+          </div>
+          <div className="setup-row">
+            <label className="setup-field">
+              <span>SMTP server</span>
+              <input value={smtpHost} required onChange={(e) => setOverride((o) => ({ ...o, smtp: e.target.value }))} placeholder="smtp.example.com" />
+            </label>
+            <label className="setup-field">
+              <span>Port</span>
+              <input value={override.smtpPort ?? '465'} inputMode="numeric" onChange={(e) => setOverride((o) => ({ ...o, smtpPort: e.target.value }))} />
+            </label>
+          </div>
         </details>
 
-        <button className="primary" type="submit" disabled={busy || !email || !password}>
+        <button className="primary" type="submit" disabled={busy || !email || !password || !imapHost || !smtpHost}>
           {busy && <LoaderCircle size={14} className="spin" />}
           {busy ? 'Connecting' : 'Connect'}
         </button>
+        {onCancel && (
+          <button type="button" className="setup-cancel" onClick={onCancel}>
+            Cancel
+          </button>
+        )}
       </form>
     </div>
   )

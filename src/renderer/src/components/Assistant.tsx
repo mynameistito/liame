@@ -1,7 +1,7 @@
 import { ArrowUp, CornerDownLeft, Sparkles, Square, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { ChatTurn, MessageDetail } from '../../../shared/types'
-import { aiStream, errorMessage, toContext } from '../lib'
+import { aiStream, errorMessage, toContext, useAccount } from '../lib'
 
 const SUGGESTIONS = ['Summarize this', 'What do they want from me?', 'List action items and deadlines', 'Draft a reply', 'Translate to English']
 
@@ -13,6 +13,7 @@ interface Props {
 }
 
 export function Assistant({ message, onClose, closeHint, onUseAsReply }: Props) {
+  const { account } = useAccount()
   const [turns, setTurns] = useState<ChatTurn[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
@@ -41,7 +42,7 @@ export function Assistant({ message, onClose, closeHint, onUseAsReply }: Props) 
     setInput('')
     setError('')
     setStreaming(true)
-    const run = aiStream({ kind: 'ask', message: message ? toContext(message) : undefined, history }, (partial) =>
+    const run = aiStream(account.id, { kind: 'ask', message: message ? toContext(message) : undefined, history }, (partial) =>
       setTurns([...history, { role: 'assistant', text: partial }]),
     )
     cancel.current = run.cancel

@@ -49,15 +49,17 @@ export class MailService {
   private watcherRetry: NodeJS.Timeout | null = null
   private stopped = false
   private mailboxes: Mailbox[] = []
+  /** Highest INBOX UID already reported as new, so notifications only cover arrivals. Null until the watcher connects. */
+  private inboxSeenUid: number | null = null
   private previewCache = new Map<string, string>()
   private parsedCache = new Map<string, ParsedMail>()
 
   constructor(
-    private account: AccountConfig,
+    readonly account: AccountConfig,
     private emit: Listener,
   ) {}
 
-  static async test(account: AccountConfig): Promise<void> {
+  static async test(account: Pick<AccountConfig, 'email' | 'password' | 'imap'>): Promise<void> {
     const client = createClient(account)
     try {
       await client.connect()
@@ -82,16 +84,22 @@ export class MailService {
   async listMailboxes(): Promise<Mailbox[]> {
     const client = await this.connection()
     const list = await client.list({ statusQuery: { messages: true, unseen: true } })
-    this.mailboxes = list
-      .filter((box) => !box.flags.has('\\Noselect') && !box.flags.has('\\NonExistent'))
-      .map((box) => ({
-        path: box.path,
-        name: box.path.toUpperCase() === 'INBOX' ? 'Inbox' : box.name,
-        specialUse: box.specialUse ? SPECIAL_USE[box.specialUse] : undefined,
-        unread: box.status?.unseen ?? 0,
-        total: box.status?.messages ?? 0,
-        depth: box.parent.length,
-      }))
+    const selectable = list.filter((box) => !box.flags.has('\\Noselect') && !box.flags.has('\\NonExistent'))
+    const shown = new Set(selectable.map((box) => box.path))
+    this.mailboxes = selectable
+      .map((box) => {
+        const specialUse = box.specialUse ? SPECIAL_USE[box.specialUse] : undefined
+        // Gmail keeps its system folders under a hidden "[Gmail]" parent; indent only under parents that are listed.
+        const depth = specialUse ? 0 : box.parent.filter((_, i) => shown.has(box.parent.slice(0, i + 1).join(box.delimiter))).length
+        return {
+          path: box.path,
+          name: box.path.toUpperCase() === 'INBOX' ? 'Inbox' : box.name,
+          specialUse,
+          unread: box.status?.unseen ?? 0,
+          total: box.status?.messages ?? 0,
+          depth,
+        }
+      })
       .sort((a, b) => rank(a) - rank(b) || a.path.localeCompare(b.path))
     return this.mailboxes
   }
@@ -145,10 +153,9 @@ export class MailService {
 
   async search(path: string, query: string): Promise<MessageSummary[]> {
     return this.withMailbox(path, async (client) => {
-      const found = await client.search(
-        { or: [{ subject: query }, { from: query }, { to: query }, { body: query }] },
-        { uid: true },
-      )
+      // Gmail understands its own search syntax (from:, has:attachment, older_than:) and searches faster with it.
+      const gmail = client.capabilities.has('X-GM-EXT-1')
+      const found = await client.search(gmail ? { gmraw: query } : { or: [{ subject: query }, { from: query }, { to: query }, { body: query }] }, { uid: true })
       const uids = (found || []).sort((a, b) => b - a).slice(0, 100)
       if (uids.length === 0) return []
       const messages: MessageSummary[] = []
@@ -237,6 +244,28 @@ export class MailService {
     await this.withMailbox(drafts, (client) => client.messageDelete([uid], { uid: true }))
   }
 
+  async inboxUnread(): Promise<number> {
+    const client = await this.connection()
+    const status = await client.status('INBOX', { unseen: true })
+    return status ? (status.unseen ?? 0) : 0
+  }
+
+  /** Unread INBOX messages that arrived since the last call (or since the watcher connected). */
+  async takeNewInbox(): Promise<MessageSummary[]> {
+    if (this.inboxSeenUid === null) return []
+    return this.withMailbox('INBOX', async (client) => {
+      // Read under the lock, so overlapping arrival events cannot report the same messages twice.
+      const since = this.inboxSeenUid ?? 0
+      const fresh: MessageSummary[] = []
+      for await (const msg of client.fetch(`${since + 1}:*`, SUMMARY_QUERY, { uid: true })) {
+        // "n:*" always returns the newest message, even when nothing is newer than n.
+        if (msg.uid > since) fresh.push(this.toSummary('INBOX', msg))
+      }
+      this.inboxSeenUid = Math.max(since, ...fresh.map((m) => m.uid))
+      return fresh.filter((m) => !m.seen).sort((a, b) => b.uid - a.uid)
+    })
+  }
+
   async undoMove(move: MoveResult): Promise<void> {
     await this.withMailbox(move.to, (client) => client.messageMove(move.uids, move.from, { uid: true }))
     this.emit({ type: 'mailboxes-changed' })
@@ -258,6 +287,9 @@ export class MailService {
     const found = this.mailboxes.find((box) => box.specialUse === target)
     if (found) return found.path
     if (target !== 'archive') throw new Error(`No ${target} folder on this account.`)
+    // Gmail has no Archive folder: archiving removes the Inbox label, which a move to All Mail does.
+    const allMail = this.mailboxes.find((box) => box.specialUse === 'all')
+    if (this.account.provider === 'gmail' && allMail) return allMail.path
     const client = await this.connection()
     const created = await client.mailboxCreate('Archive')
     await this.listMailboxes()
@@ -346,7 +378,9 @@ export class MailService {
     })
     try {
       await watcher.connect()
-      await watcher.mailboxOpen('INBOX')
+      const inbox = await watcher.mailboxOpen('INBOX')
+      // Everything already in INBOX at connect time is old news for notifications.
+      if (this.inboxSeenUid === null) this.inboxSeenUid = Math.max(0, Number(inbox.uidNext ?? 1) - 1)
       this.watcher = watcher
       this.emit({ type: 'connection', status: 'online' })
     } catch {
@@ -359,7 +393,7 @@ export class MailService {
 
 const SUMMARY_QUERY = { uid: true, flags: true, envelope: true, internalDate: true, bodyStructure: true }
 
-function createClient(account: AccountConfig, extra: Partial<ImapFlowOptions> = {}): ImapFlow {
+function createClient(account: Pick<AccountConfig, 'email' | 'password' | 'imap'>, extra: Partial<ImapFlowOptions> = {}): ImapFlow {
   return new ImapFlow({
     ...extra,
     host: account.imap.host,

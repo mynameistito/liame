@@ -33,6 +33,7 @@ export type CommandId =
   | 'junk'
   | 'markAllRead'
   | 'editDraft'
+  | 'nextAccount'
   | 'toggleSidebar'
   | 'toggleList'
   | 'send'
@@ -79,6 +80,7 @@ export const COMMANDS: CommandDef[] = [
   { id: 'filterFlagged', title: 'Show flagged only', group: 'View', keys: [] },
   { id: 'toggleDarken', title: 'Toggle original email colors', group: 'View', keys: [] },
   { id: 'loadImages', title: 'Load remote images', group: 'View', keys: [] },
+  { id: 'nextAccount', title: 'Switch to next account', group: 'Navigate', keys: ['Control+Tab'], global: true },
   { id: 'toggleSidebar', title: 'Show / hide sidebar', group: 'View', keys: ['Control+Meta+s'], global: true },
   { id: 'toggleList', title: 'Show / hide message list', group: 'View', keys: ['Control+Meta+l'], global: true },
   { id: 'assistant', title: 'Toggle assistant', group: 'App', keys: ['Meta+i'], global: true },

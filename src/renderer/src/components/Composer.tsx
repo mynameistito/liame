@@ -1,9 +1,9 @@
 import { LoaderCircle, Paperclip, Sparkles, Square, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { Draft, MessageContext, RewriteMode, ShortcutOverrides, Snippet } from '../../../shared/types'
+import type { AiTask, Draft, MessageContext, RewriteMode, ShortcutOverrides, Snippet } from '../../../shared/types'
 import { AddressInput } from './AddressInput'
 import { comboOf, formatCombo, isPlainKey, keymap, keysFor } from '../commands'
-import { aiStream, api, type Contact, errorMessage } from '../lib'
+import { aiStream, api, type Contact, errorMessage, useAccount } from '../lib'
 
 interface Props {
   initial: Draft
@@ -36,6 +36,7 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
   const [instruction, setInstruction] = useState('')
   const [writing, setWriting] = useState(false)
   const [selection, setSelection] = useState<[number, number]>([0, 0])
+  const { account, mail } = useAccount()
   const [snippetQuery, setSnippetQuery] = useState<string | null>(null)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [saved, setSaved] = useState(initial)
@@ -77,7 +78,7 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
     setError('')
     const submitted = draft
     try {
-      const uid = await api.saveDraft(submitted)
+      const uid = await mail.saveDraft(submitted)
       // The new copy holds every attachment (stored ones first), so they are all "kept" from now on.
       const stored = uid
         ? {
@@ -108,10 +109,10 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
     else setConfirmDiscard(false)
   }
 
-  async function stream(task: Parameters<typeof aiStream>[0], place: (text: string) => string) {
+  async function stream(task: AiTask, place: (text: string) => string) {
     setWriting(true)
     setError('')
-    const run = aiStream(task, (text) => set({ text: place(text) }))
+    const run = aiStream(account.id, task, (text) => set({ text: place(text) }))
     cancel.current = run.cancel
     try {
       await run.done
@@ -162,7 +163,7 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
     setSending(true)
     setError('')
     try {
-      await api.send(draft)
+      await mail.send(draft)
       onSent()
     } catch (err) {
       setError(errorMessage(err))

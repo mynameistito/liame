@@ -42,7 +42,7 @@ export async function sendDraft(account: AccountConfig, draft: Draft, stored: St
   })
 
   try {
-    // Zoho's SMTP server files a copy in Sent on its own, so there is no IMAP append here.
+    // Zoho and Gmail both file a copy in Sent on their own, so there is no IMAP append here.
     await transport.sendMail(mailOptions(account, draft, stored))
   } finally {
     transport.close()

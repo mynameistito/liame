@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import type { Address, AiTask, ClassifyItem, LiameApi, MessageContext, MessageDetail, MessageSummary } from '../../shared/types'
+import { createContext, useContext, useEffect, useState } from 'react'
+import type { Address, AiTask, ClassifyItem, Draft, LiameApi, MessageContext, MessageDetail, MessageSummary, MoveResult, MoveTarget, PublicAccount } from '../../shared/types'
 
 declare global {
   interface Window {
@@ -8,6 +8,35 @@ declare global {
 }
 
 export const api = window.liame
+
+/** The mail calls of the API with the account filled in. */
+export function mailApi(accountId: string) {
+  return {
+    listMailboxes: () => api.listMailboxes(accountId),
+    listMessages: (mailbox: string, before?: number) => api.listMessages(accountId, mailbox, before),
+    previews: (mailbox: string, uids: number[]) => api.previews(accountId, mailbox, uids),
+    search: (mailbox: string, query: string) => api.search(accountId, mailbox, query),
+    getMessage: (mailbox: string, uid: number) => api.getMessage(accountId, mailbox, uid),
+    setFlags: (mailbox: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }) => api.setFlags(accountId, mailbox, uids, flags),
+    move: (mailbox: string, uids: number[], target: MoveTarget) => api.move(accountId, mailbox, uids, target),
+    undoMove: (move: MoveResult) => api.undoMove(accountId, move),
+    markAllRead: (mailbox: string) => api.markAllRead(accountId, mailbox),
+    saveDraft: (draft: Draft) => api.saveDraft(accountId, draft),
+    send: (draft: Draft) => api.send(accountId, draft),
+    saveAttachment: (mailbox: string, uid: number, partId: number) => api.saveAttachment(accountId, mailbox, uid, partId),
+  }
+}
+
+export type MailApi = ReturnType<typeof mailApi>
+
+/** The account the window is showing, for components deep in the tree (composer, reader, assistant). */
+export const AccountContext = createContext<{ account: PublicAccount; mail: MailApi } | null>(null)
+
+export function useAccount() {
+  const value = useContext(AccountContext)
+  if (!value) throw new Error('useAccount needs an AccountContext provider.')
+  return value
+}
 
 const time = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
 const weekday = new Intl.DateTimeFormat(undefined, { weekday: 'short' })
@@ -68,7 +97,7 @@ export function errorMessage(error: unknown): string {
 }
 
 /** Run an AI task in the main process and receive the growing text as it streams. */
-export function aiStream(task: AiTask, onText: (text: string) => void): { done: Promise<string>; cancel: () => void } {
+export function aiStream(accountId: string, task: AiTask, onText: (text: string) => void): { done: Promise<string>; cancel: () => void } {
   const id = crypto.randomUUID()
   let text = ''
   const done = new Promise<string>((resolve, reject) => {
@@ -86,7 +115,7 @@ export function aiStream(task: AiTask, onText: (text: string) => void): { done: 
         resolve(text)
       }
     })
-    api.aiStart(id, task).catch((err) => {
+    api.aiStart(id, task, accountId).catch((err) => {
       off()
       reject(err)
     })
