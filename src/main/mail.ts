@@ -143,8 +143,17 @@ export class MailService {
     return { mailbox: path, messages, hasMore: messages.length === limit || this.hasOlderOnServer(path) }
   }
 
+  /** The conversation oldest first, one entry per message even when the server keeps copies in several folders. */
   getThread(thread: string): MessageSummary[] {
-    return store.getThread(this.account.id, thread, this.threadExclusions())
+    const allMail = this.mailboxes.find((box) => box.specialUse === 'all')?.path
+    const seen = new Map<string, MessageSummary>()
+    for (const m of store.getThread(this.account.id, thread, this.threadExclusions())) {
+      const id = m.messageId?.toLowerCase() ?? m.key
+      const kept = seen.get(id)
+      // Prefer the copy in a real folder over Gmail's All Mail.
+      if (!kept || (kept.mailbox === allMail && m.mailbox !== allMail)) seen.set(id, m)
+    }
+    return [...seen.values()].sort((a, b) => Date.parse(a.date) - Date.parse(b.date))
   }
 
   /** Conversations never pull in copies sitting in Trash or Spam. */

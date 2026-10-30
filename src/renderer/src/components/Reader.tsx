@@ -261,6 +261,7 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
 
 function ThreadCard(props: { message: MessageSummary; body?: MessageDetail | 'loading'; darken: boolean; blockImages: boolean; onToggle: () => void }) {
   const { message: m, body } = props
+  const { mail } = useAccount()
   const open = body !== undefined
   return (
     <div className={`thread-card ${open ? 'open' : ''}`}>
@@ -280,6 +281,19 @@ function ThreadCard(props: { message: MessageSummary; body?: MessageDetail | 'lo
       {body && body !== 'loading' && (
         <div className="thread-card-body">
           {body.html ? <EmailFrame html={body.html} darken={props.darken} blockImages={props.blockImages} /> : <PlainText text={body.text ?? ''} />}
+          {body.attachments.length > 0 && (
+            <div className="attachments">
+              {body.attachments.map((file) => (
+                <button key={file.partId} className="attachment" onClick={() => mail.saveAttachment(body.mailbox, body.uid, file.partId)} title="Save">
+                  <Paperclip size={15} />
+                  <div style={{ minWidth: 0 }}>
+                    <div className="attachment-name">{file.filename}</div>
+                    <div className="attachment-size">{fileSize(file.size)}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

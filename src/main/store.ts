@@ -292,19 +292,21 @@ export function listThreads(account: string, mailbox: string, offset: number, li
          SELECT *,
            row_number() OVER (PARTITION BY thread ORDER BY date DESC, uid DESC) AS rn,
            sum(seen = 0) OVER (PARTITION BY thread) AS unseen_here,
+           max(flagged) OVER (PARTITION BY thread) AS flagged_here,
            json_group_array(uid) OVER (PARTITION BY thread ORDER BY date DESC, uid DESC ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS uids_here
          FROM messages WHERE account = ? AND mailbox = ?
        ) WHERE rn = 1 ORDER BY date DESC, uid DESC LIMIT ? OFFSET ?`,
     )
-    .all(account, mailbox, limit, offset) as unknown as Array<Row & { unseen_here: number; uids_here: string }>
+    .all(account, mailbox, limit, offset) as unknown as Array<Row & { unseen_here: number; flagged_here: number; uids_here: string }>
   if (!rows.length) return []
   const threads = [...new Set(rows.map((r) => r.thread))]
   const stats = new Map(
     (
       d
         .prepare(
-          `SELECT thread, count(*) AS total, json_group_array(from_name) AS names FROM (
-             SELECT thread, from_name FROM messages
+          // Gmail keeps one message in several folders (Inbox and All Mail); count each Message-ID once.
+          `SELECT thread, count(DISTINCT coalesce(message_id, mailbox || '/' || uid)) AS total, json_group_array(from_name) AS names FROM (
+             SELECT thread, from_name, message_id, mailbox, uid FROM messages
              WHERE account = ? AND thread IN (${threads.map(() => '?').join(',')}) AND mailbox NOT IN (${exclude.map(() => '?').join(',') || "''"})
              ORDER BY date
            ) GROUP BY thread`,
@@ -318,6 +320,8 @@ export function listThreads(account: string, mailbox: string, offset: number, li
     return {
       ...toSummary(row),
       seen: row.unseen_here === 0,
+      // Flagged when any message of the conversation here is.
+      flagged: row.flagged_here === 1,
       threadUids: JSON.parse(row.uids_here) as number[],
       threadCount: stat?.total ?? 1,
       participants: [...new Set(names.filter(Boolean))],

@@ -272,6 +272,18 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
           return page.messages.map((m) => ({ ...m, label: labels.get(m.key) }))
         })
         setHasMore(page.hasMore)
+        // A new message in a conversation gives its row a new key; follow the conversation, not the old key.
+        const keys = new Set(page.messages.map((m) => m.key))
+        const byThread = (key: string) => {
+          const thread = messagesRef.current.find((m) => m.key === key)?.thread
+          return thread ? page.messages.find((m) => m.thread === thread)?.key : undefined
+        }
+        const open = selectedRef.current
+        if (open && !keys.has(open)) {
+          const next = byThread(open)
+          if (next) openRef.current(next, page.messages.find((m) => m.key === next))
+        }
+        setChecked((list) => list.map((key) => (keys.has(key) ? key : (byThread(key) ?? key))))
         setContacts(rememberContacts(page.messages.flatMap((m) => [m.from, ...m.to]), account.email))
         if (pendingOpen.current?.path === path) {
           // The new rows are not rendered yet, so hand open() the row itself. A message outside this page
@@ -350,7 +362,10 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     const off = api.onEvent((event) => {
       if (event.accountId !== account.id) return
       if (event.type === 'new-mail' || event.type === 'mailboxes-changed') void refreshMailboxes()
-      if (event.type === 'mailbox-synced' && currentRef.current === event.mailbox) void refreshList(currentRef.current, false)
+      // Conversation rows draw on other folders (a reply lands in Sent), so any finished sync rereads the open list.
+      if (event.type === 'mailbox-synced' && (currentRef.current === event.mailbox || threadedFor(currentRef.current))) {
+        void refreshList(currentRef.current, false)
+      }
     })
     const onFocus = () => {
       void refreshMailboxes()
@@ -425,13 +440,15 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       try {
         const [message, conversation] = await Promise.all([
           mail.getMessage(target.mailbox, target.uid),
-          target.thread && (target.threadCount ?? 1) > 1 ? mail.getThread(target.thread) : Promise.resolve(null),
+          // A local read; the row's count can lag behind a folder that synced after it was listed.
+          target.thread ? mail.getThread(target.thread) : Promise.resolve(null),
         ])
         if (request !== detailRequest.current) return
         setDetail(message)
         setThread(conversation && conversation.length > 1 ? conversation : null)
         const { markRead } = prefsRef.current
-        if (!message.seen && markRead !== 'never') {
+        // A conversation row is unread when any of its messages here is, even if the newest one was read.
+        if ((!target.seen || !message.seen) && markRead !== 'never') {
           if (markRead === 'delay') {
             await new Promise((resolve) => window.setTimeout(resolve, 2000))
             // Only count it as read if it is still the open message.
