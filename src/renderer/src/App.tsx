@@ -691,8 +691,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     async (flag: 'seen' | 'flagged', force?: boolean, keys: string[] = targets) => {
       const list = rowsFor(keys)
       if (list.length === 0) return
-      if (flag === 'seen' && keys.includes(selectedRef.current!)) autoReadRequest.current = null
       const value = force ?? !list.every((m) => m[flag])
+      if (flag === 'seen' && !value && keys.includes(selectedRef.current!)) autoReadRequest.current = null
       const changed = list.filter((m) => m[flag] !== value)
       if (changed.length === 0) return
       patchMessages(
