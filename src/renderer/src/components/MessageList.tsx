@@ -27,6 +27,8 @@ interface Props {
   /** The open folder; rows from other folders (search results) show where they live. */
   mailbox: string
   mailboxNames: Map<string, string>
+  /** Set in All Inboxes: rows say which account they belong to instead of which folder. */
+  accountNames?: Map<string, string>
   sidebarHidden: boolean
   onShowSidebar: () => void
   onLoadMore: () => void
@@ -107,7 +109,13 @@ export function MessageList(props: Props) {
             key={m.key}
             message={m}
             label={m.label ? props.labels.get(m.label) : undefined}
-            folder={m.mailbox !== props.mailbox ? (props.mailboxNames.get(m.mailbox) ?? m.mailbox) : undefined}
+            folder={
+              props.accountNames
+                ? props.accountNames.get(m.account)
+                : m.mailbox !== props.mailbox
+                  ? (props.mailboxNames.get(m.mailbox) ?? m.mailbox)
+                  : undefined
+            }
             selected={m.key === selected}
             checked={props.checked.includes(m.key)}
             showRecipient={showRecipient}

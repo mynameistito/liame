@@ -195,6 +195,7 @@ export interface SettingsPatch {
 
 /** Where a move put the messages, so it can be undone. Null when the server cannot report new UIDs. */
 export interface MoveResult {
+  account: string
   from: string
   to: string
   uids: number[]
@@ -229,7 +230,8 @@ export interface AiEvent {
 }
 
 export interface ClassifyItem {
-  uid: number
+  /** MessageSummary.key; results come back under it. */
+  key: string
   messageId?: string
   from: string
   subject: string
@@ -247,6 +249,10 @@ export interface LiameApi {
   listMailboxes(accountId: string): Promise<Mailbox[]>
   /** Reads the local store; the first call for a mailbox waits for its initial sync. With threads, one row per conversation. */
   listMessages(accountId: string, mailbox: string, offset?: number, limit?: number, threads?: boolean): Promise<MessagePage>
+  /** Every account's inbox merged by date (conversation rows when threads is set). */
+  listUnified(offset?: number, limit?: number, threads?: boolean): Promise<MessagePage>
+  syncInboxes(): Promise<void>
+  markAllInboxesRead(): Promise<void>
   /** Every message of a conversation across the account's folders (not Trash or Spam), oldest first. */
   getThread(accountId: string, thread: string): Promise<MessageSummary[]>
   /** Brings the local copy of a mailbox up to date; a 'mailbox-synced' event follows. */
@@ -274,7 +280,7 @@ export interface LiameApi {
   aiStart(id: string, task: AiTask, accountId: string): Promise<void>
   aiCancel(id: string): Promise<void>
   onAi(listener: (event: AiEvent) => void): () => void
-  classify(items: ClassifyItem[]): Promise<Record<number, string | null>>
+  classify(items: ClassifyItem[]): Promise<Record<string, string | null>>
   setLabel(item: ClassifyItem, label: string | null): Promise<void>
   onEvent(listener: (event: MailEvent) => void): () => void
 }

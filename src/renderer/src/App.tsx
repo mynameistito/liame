@@ -39,6 +39,9 @@ import {
   usePersistent,
 } from './lib'
 
+/** The merged inbox of every account; not a real mailbox path. */
+const UNIFIED = '\u0000all-inboxes'
+
 const EMPTY_DRAFT: Draft = { to: '', cc: '', bcc: '', subject: '', text: '', attachments: [] }
 
 const DEFAULT_PREFS: Prefs = {
@@ -135,7 +138,15 @@ interface MailProps {
 
 function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, onRemove }: MailProps) {
   const { mail } = useAccount()
+  // In All Inboxes a message can belong to any account; its actions, replies, and AI run as that account.
+  const contexts = useMemo(() => new Map(accounts.map((a) => [a.id, { account: a, mail: mailApi(a.id) }])), [accounts])
+  const contextsRef = useRef(contexts)
+  contextsRef.current = contexts
+  const mailFor = (id: string) => contextsRef.current.get(id)?.mail ?? mail
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([])
+  /** Folders of the other accounts, for moving their messages out of All Inboxes. */
+  const [otherBoxes, setOtherBoxes] = useState<Record<string, Mailbox[]>>({})
+  const boxesOf = (id: string) => (id === account.id ? mailboxes : (otherBoxes[id] ?? []))
   const [current, setCurrent] = useState('')
   const [messages, setMessages] = useState<MessageSummary[]>([])
   const [hasMore, setHasMore] = useState(false)
@@ -154,7 +165,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const [results, setResults] = useState<MessageSummary[] | null>(null)
   const [searchRun, setSearchRun] = useState(0)
   const [filter, setFilter] = useState<Filter>('all')
-  const [composer, setComposer] = useState<{ draft: Draft; title: string; context?: MessageContext; autoDraft?: boolean } | null>(null)
+  const [composer, setComposer] = useState<{ account: string; draft: Draft; title: string; context?: MessageContext; autoDraft?: boolean } | null>(null)
   const [settings, setSettings] = useState<PublicSettings | null>(null)
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -206,6 +217,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const labelList = settings?.labels.list ?? []
   const labelMap = useMemo(() => new Map(labelList.map((l) => [l.id, l])), [labelList])
   const mailboxNames = useMemo(() => new Map(mailboxes.map((b) => [b.path, b.name])), [mailboxes])
+  const accountNames = useMemo(() => new Map(accounts.map((a) => [a.id, a.email])), [accounts])
   const labelCounts = useMemo(() => {
     const counts: Record<string, number> = {}
     for (const m of messages) if (m.label && !m.seen) counts[m.label] = (counts[m.label] ?? 0) + 1
@@ -251,6 +263,22 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     }
   }, [])
 
+  /** Reloads the folder lists of the other accounts (or just `ids`), which All Inboxes needs for moving their mail. */
+  const loadOtherBoxes = useCallback(
+    (ids = [...contextsRef.current.keys()].filter((id) => id !== account.id)) => {
+      for (const id of ids) {
+        void api
+          .listMailboxes(id)
+          .then((boxes) => setOtherBoxes((all) => ({ ...all, [id]: boxes })))
+          .catch(() => {})
+      }
+    },
+    [account.id],
+  )
+
+  /** All Inboxes syncs every account's inbox; a folder syncs itself. */
+  const syncView = (path: string) => (path === UNIFIED ? api.syncInboxes() : mail.sync(path))
+
   /** Conversations group every folder but Drafts, where each draft stands alone. */
   const threadedFor = (path: string) => prefsRef.current.conversations && mailboxesRef.current.find((b) => b.path === path)?.specialUse !== 'drafts'
 
@@ -265,7 +293,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       setListError('')
       try {
         const loaded = reset ? 0 : messagesRef.current.length
-        const page = await mail.listMessages(path, 0, Math.max(50, loaded), threadedFor(path))
+        const limit = Math.max(50, loaded)
+        const page = path === UNIFIED ? await api.listUnified(0, limit, prefsRef.current.conversations) : await mail.listMessages(path, 0, limit, threadedFor(path))
         if (currentRef.current !== path) return
         setMessages((old) => {
           const labels = new Map(old.map((m) => [m.key, m.label]))
@@ -286,7 +315,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
           // Same row, but the conversation may have grown (a reply landed in Sent): reread it.
           const row = page.messages.find((m) => m.key === open)
           if (row?.thread) {
-            void mail.getThread(row.thread).then((conversation) => {
+            void mailFor(row.account).getThread(row.thread).then((conversation) => {
               if (selectedRef.current === row.key) setThread(conversation.length > 1 ? conversation : null)
             })
           }
@@ -317,7 +346,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     loadingMore.current = true
     const path = current
     try {
-      const page = await mail.listMessages(path, messagesRef.current.length, undefined, threadedFor(path))
+      const offset = messagesRef.current.length
+      const page = path === UNIFIED ? await api.listUnified(offset, 50, prefsRef.current.conversations) : await mail.listMessages(path, offset, undefined, threadedFor(path))
       if (currentRef.current !== path) return
       setMessages((old) => [...old, ...page.messages.filter((m) => !old.some((o) => o.key === m.key))])
       setHasMore(page.hasMore)
@@ -337,7 +367,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   // Label inbox mail in the background once its preview is known. Stored labels come back instantly;
   // only new messages reach the decision model.
   useEffect(() => {
-    if (box?.specialUse !== 'inbox' || !settings) return
+    if ((box?.specialUse !== 'inbox' && current !== UNIFIED) || !settings) return
     const pending = messages.filter((m) => m.label === undefined && m.preview !== undefined && !classifying.current.has(m.key))
     if (pending.length === 0) return
     pending.forEach((m) => classifying.current.add(m.key))
@@ -346,7 +376,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       .classify(pending.map(classifyItem))
       .then((labels) => {
         if (currentRef.current !== path) return
-        const apply = (list: MessageSummary[]) => list.map((m) => (m.mailbox === path && m.uid in labels ? { ...m, label: labels[m.uid] } : m))
+        const apply = (list: MessageSummary[]) => list.map((m) => (m.key in labels ? { ...m, label: labels[m.key] } : m))
         setMessages(apply)
         setResults((r) => r && apply(r))
       })
@@ -361,14 +391,18 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     setQuery('')
     setResults(null)
     if (!current) return
-    void refreshList(current, true).then(() => mail.sync(current).catch((err) => setListError(errorMessage(err))))
+    void refreshList(current, true).then(() => syncView(current).catch((err) => setListError(errorMessage(err))))
   }, [current, refreshList])
 
   // Server push and finished syncs update the open list; returning to the window checks the server again.
   // Notifications are shown by the main process for every account.
   useEffect(() => {
     const off = api.onEvent((event) => {
-      if (event.accountId !== account.id) return
+      if (currentRef.current === UNIFIED && event.type === 'mailbox-synced') return void refreshList(UNIFIED, false)
+      if (event.accountId !== account.id) {
+        if (currentRef.current === UNIFIED && event.type === 'mailboxes-changed' && event.accountId) loadOtherBoxes([event.accountId])
+        return
+      }
       if (event.type === 'new-mail' || event.type === 'mailboxes-changed') void refreshMailboxes()
       // Conversation rows draw on other folders (a reply lands in Sent), so any finished sync rereads the open list.
       if (event.type === 'mailbox-synced' && (currentRef.current === event.mailbox || threadedFor(currentRef.current))) {
@@ -377,14 +411,15 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     })
     const onFocus = () => {
       void refreshMailboxes()
-      if (currentRef.current) void mail.sync(currentRef.current).catch(() => {})
+      if (currentRef.current === UNIFIED) loadOtherBoxes()
+      if (currentRef.current) void syncView(currentRef.current).catch(() => {})
     }
     window.addEventListener('focus', onFocus)
     return () => {
       off()
       window.removeEventListener('focus', onFocus)
     }
-  }, [account.id, refreshMailboxes, refreshList])
+  }, [account.id, refreshMailboxes, refreshList, loadOtherBoxes])
 
   // A clicked notification: clear anything that could hide the message, then open it once its mailbox loads.
   useEffect(() => {
@@ -414,9 +449,11 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     let stale = false
     const timer = window.setTimeout(async () => {
       try {
-        const local = await mail.searchLocal(q)
+        const local = path === UNIFIED ? await api.searchLocal(accounts.map((a) => a.id), q) : await mail.searchLocal(q)
         if (stale || currentRef.current !== path) return
         setResults(local)
+        // The server can only search one folder; All Inboxes stays with the local results.
+        if (path === UNIFIED) return
         const remote = await mail.search(path, q)
         if (stale || currentRef.current !== path) return
         const known = new Set(local.map((m) => m.key))
@@ -447,9 +484,9 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       setImagesAllowed(null)
       try {
         const [message, conversation] = await Promise.all([
-          mail.getMessage(target.mailbox, target.uid),
+          mailFor(target.account).getMessage(target.mailbox, target.uid),
           // A local read; the row's count can lag behind a folder that synced after it was listed.
-          target.thread ? mail.getThread(target.thread) : Promise.resolve(null),
+          target.thread ? mailFor(target.account).getThread(target.thread) : Promise.resolve(null),
         ])
         if (request !== detailRequest.current) return
         setDetail(message)
@@ -463,9 +500,10 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
             if (selectedRef.current !== key || request !== detailRequest.current) return
           }
           patchMessages([key], (m) => ({ ...m, seen: true }))
-          setMailboxes((boxes) => boxes.map((b) => (b.path === target.mailbox ? { ...b, unread: Math.max(0, b.unread - 1) } : b)))
+          if (target.account === account.id)
+            setMailboxes((boxes) => boxes.map((b) => (b.path === target.mailbox ? { ...b, unread: Math.max(0, b.unread - 1) } : b)))
           // Opening a conversation reads all of it.
-          await mail.setFlags(target.mailbox, target.threadUids ?? [target.uid], { seen: true })
+          await mailFor(target.account).setFlags(target.mailbox, target.threadUids ?? [target.uid], { seen: true })
         }
       } catch (err) {
         if (request === detailRequest.current) setDetailError(errorMessage(err))
@@ -515,11 +553,16 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     [visible, selected, open],
   )
 
-  /** UIDs to act on, grouped by folder (the server acts per folder). A conversation row stands for all its messages there. */
+  /** UIDs to act on, grouped by account and folder (the server acts per folder). A conversation row stands for all its messages there. */
   const byMailbox = (keys: string[]) => {
-    const groups = new Map<string, number[]>()
-    for (const m of rowsFor(keys)) groups.set(m.mailbox, [...(groups.get(m.mailbox) ?? []), ...(m.threadUids ?? [m.uid])])
-    return groups
+    const groups = new Map<string, { account: string; mailbox: string; uids: number[] }>()
+    for (const m of rowsFor(keys)) {
+      const id = `${m.account}/${m.mailbox}`
+      const group = groups.get(id) ?? { account: m.account, mailbox: m.mailbox, uids: [] }
+      group.uids.push(...(m.threadUids ?? [m.uid]))
+      groups.set(id, group)
+    }
+    return [...groups.values()]
   }
 
   /** List rows for the keys, plus the open message when it has no list row (opened from a notification). */
@@ -528,6 +571,19 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     const open = detailRef.current
     if (open && keys.includes(open.key) && !rows.some((m) => m.key === open.key)) rows.push(open)
     return rows
+  }
+
+  /** Folders the messages can move to: their account's, other than the one they are all in. None when they span accounts. */
+  useEffect(() => {
+    if (current === UNIFIED) loadOtherBoxes()
+  }, [current, accounts.length, account.id])
+
+  const foldersFor = (keys: string[]) => {
+    const rows = rowsFor(keys)
+    const ids = new Set(rows.map((m) => m.account))
+    if (ids.size !== 1) return []
+    const sources = new Set(rows.map((m) => m.mailbox))
+    return boxesOf(rows[0].account).filter((b) => !(sources.size === 1 && sources.has(b.path)))
   }
 
   const move = useCallback(
@@ -552,14 +608,14 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       }
       try {
         const moved: MoveResult[] = []
-        for (const [mailbox, uids] of groups) {
-          const result = await mail.move(mailbox, uids, target)
+        for (const group of groups) {
+          const result = await mailFor(group.account).move(group.mailbox, group.uids, target)
           if (result) moved.push(result)
         }
         // Undo only when every folder's move can be reversed exactly.
-        setLastMove(moved.length === groups.size ? moved : null)
-        const permanent = target === 'trash' && [...groups.keys()].every((path) => mailboxes.find((b) => b.path === path)?.specialUse === 'trash')
-        const where = typeof target === 'string' ? target : (mailboxes.find((b) => b.path === target.path)?.name ?? target.path)
+        setLastMove(moved.length === groups.length ? moved : null)
+        const permanent = target === 'trash' && groups.every((g) => boxesOf(g.account).find((b) => b.path === g.mailbox)?.specialUse === 'trash')
+        const where = typeof target === 'string' ? target : (boxesOf(groups[0].account).find((b) => b.path === target.path)?.name ?? target.path)
         const verb = permanent
           ? 'deleted'
           : target === 'archive'
@@ -570,13 +626,13 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
                 ? 'marked as junk'
                 : `moved to ${where}`
         const text = keys.length > 1 ? `${keys.length} messages ${verb}` : verb.charAt(0).toUpperCase() + verb.slice(1)
-        notify(text, moved.length === groups.size && moved.length > 0)
+        notify(text, moved.length === groups.length && moved.length > 0)
       } catch (err) {
         notify(errorMessage(err))
         void refreshList(current, false)
       }
     },
-    [targets, selected, visible, current, mailboxes, open, notify, refreshList],
+    [targets, selected, visible, current, mailboxes, otherBoxes, open, notify, refreshList],
   )
 
   const undo = useCallback(async () => {
@@ -584,9 +640,9 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     const moves = lastMove
     setLastMove(null)
     try {
-      for (const move of moves) await mail.undoMove(move)
+      for (const move of moves) await mailFor(move.account).undoMove(move)
       notify('Moved back')
-      const gone = new Set(moves.flatMap((move) => move.uids.map((uid) => `${account.id}/${move.to}/${uid}`)))
+      const gone = new Set(moves.flatMap((move) => move.uids.map((uid) => `${move.account}/${move.to}/${uid}`)))
       // The moved copies are gone from where they went; drop them rather than wait for the next sync.
       setMessages((list) => list.filter((m) => !gone.has(m.key)))
       setResults((r) => r && r.filter((m) => !gone.has(m.key)))
@@ -612,12 +668,11 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       )
       const groups = byMailbox(changed.map((m) => m.key))
       if (flag === 'seen') {
-        setMailboxes((boxes) =>
-          boxes.map((b) => (groups.has(b.path) ? { ...b, unread: Math.max(0, b.unread + (value ? -1 : 1) * groups.get(b.path)!.length) } : b)),
-        )
+        const here = (path: string) => groups.find((g) => g.account === account.id && g.mailbox === path)?.uids.length ?? 0
+        setMailboxes((boxes) => boxes.map((b) => (here(b.path) ? { ...b, unread: Math.max(0, b.unread + (value ? -1 : 1) * here(b.path)) } : b)))
       }
       try {
-        for (const [mailbox, uids] of groups) await mail.setFlags(mailbox, uids, { [flag]: value })
+        for (const group of groups) await mailFor(group.account).setFlags(group.mailbox, group.uids, { [flag]: value })
       } catch (err) {
         notify(errorMessage(err))
       }
@@ -627,13 +682,16 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
 
   const markAllRead = useCallback(async () => {
     const path = current
+    const unified = path === UNIFIED
     patchMessages(
-      [...messages, ...(results ?? [])].filter((m) => !m.seen && m.mailbox === path).map((m) => m.key),
+      // In All Inboxes only the inboxes are marked, not search results from other folders.
+      [...messages, ...(results ?? [])].filter((m) => !m.seen && (unified ? m.mailbox.toUpperCase() === 'INBOX' : m.mailbox === path)).map((m) => m.key),
       (m) => ({ ...m, seen: true }),
     )
-    setMailboxes((boxes) => boxes.map((b) => (b.path === path ? { ...b, unread: 0 } : b)))
+    setMailboxes((boxes) => boxes.map((b) => (b.path === path || (unified && b.specialUse === 'inbox') ? { ...b, unread: 0 } : b)))
     try {
-      await mail.markAllRead(path)
+      if (unified) await api.markAllInboxesRead()
+      else await mail.markAllRead(path)
       notify('Marked all as read')
     } catch (err) {
       notify(errorMessage(err))
@@ -644,10 +702,12 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const reply = useCallback(
     (mode: ReplyMode, ai?: { autoDraft?: boolean; text?: string }) => {
       if (!detail) return
-      const draft = buildReply(detail, mode, account.email)
+      const from = contextsRef.current.get(detail.account)?.account ?? account
+      const draft = buildReply(detail, mode, from.email)
       draft.text = `${signatureBlock(prefsRef.current.signature)}${draft.text}`
       if (ai?.text) draft.text = `${ai.text.trim()}${draft.text}`
       setComposer({
+        account: from.id,
         draft,
         title: mode === 'forward' ? 'Forward' : 'Reply',
         context: mode === 'forward' ? undefined : toContext(detail),
@@ -679,7 +739,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     }
     setExpanded((e) => ({ ...e, [key]: 'loading' }))
     try {
-      const message = await mail.getMessage(m.mailbox, m.uid)
+      const message = await mailFor(m.account).getMessage(m.mailbox, m.uid)
       setExpanded((e) => (key in e ? { ...e, [key]: message } : e))
     } catch (err) {
       setExpanded(({ [key]: _gone, ...rest }) => rest)
@@ -690,6 +750,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const editDraft = useCallback(() => {
     if (!detail || detail.mailbox !== mailboxes.find((b) => b.specialUse === 'drafts')?.path) return
     setComposer({
+      account: detail.account,
       title: 'Draft',
       draft: {
         to: detail.to.map(formatAddress).join(', '),
@@ -707,8 +768,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   }, [detail, mailboxes])
 
   const compose = useCallback(
-    () => setComposer({ draft: { ...EMPTY_DRAFT, text: signatureBlock(prefsRef.current.signature) }, title: 'New message' }),
-    [],
+    () => setComposer({ account: account.id, draft: { ...EMPTY_DRAFT, text: signatureBlock(prefsRef.current.signature) }, title: 'New message' }),
+    [account.id],
   )
 
   const hasTargets = targets.length > 0
@@ -731,7 +792,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     archive: { run: () => void move('archive'), enabled: hasTargets },
     trash: { run: () => void move('trash'), enabled: hasTargets },
     junk: { run: () => void move('junk'), enabled: hasTargets && box?.specialUse !== 'junk' },
-    moveTo: { run: () => openPalette('Move to '), enabled: hasTargets },
+    moveTo: { run: () => openPalette('Move to '), enabled: hasTargets && foldersFor(targets).length > 0 },
     labelAs: { run: () => openPalette('Label as '), enabled: hasTargets && labelList.length > 0 },
     undo: { run: () => void undo(), enabled: lastMove !== null },
     toggleRead: { run: () => void toggle('seen'), enabled: hasTargets },
@@ -742,7 +803,10 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     },
     selectAll: { run: () => setChecked(visible.map((m) => m.key)), enabled: visible.length > 0 },
     clearSelection: { run: () => setChecked([]), enabled: checked.length > 0 },
-    markAllRead: { run: () => void markAllRead(), enabled: (box?.unread ?? 0) > 0 || messages.some((m) => !m.seen) },
+    markAllRead: {
+      run: () => void markAllRead(),
+      enabled: (current === UNIFIED ? accounts.some((a) => a.unread > 0) : (box?.unread ?? 0) > 0) || messages.some((m) => !m.seen),
+    },
     next: { run: () => (step(1), listRef.current?.focus()) },
     previous: { run: () => (step(-1), listRef.current?.focus()) },
     goInbox: {
@@ -799,7 +863,6 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     return () => window.removeEventListener('keydown', onKey)
   }, [composer, settingsTab, paletteOpen, mainKeys])
 
-  const folders = mailboxes.filter((b) => b.path !== current)
   const paletteItems = (): PaletteItem[] => [
     ...COMMANDS.filter((c) => !c.composer && c.id !== 'palette').map((c) => {
       const command = commands[c.id as keyof typeof commands]
@@ -808,6 +871,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     ...accounts
       .filter((a) => a.id !== account.id)
       .map((a) => ({ id: `account:${a.id}`, title: `Switch to ${a.email}`, group: 'Accounts', run: () => onSwitch(a.id) })),
+    ...(accounts.length > 1 ? [{ id: 'box:unified', title: 'Go to All Inboxes', group: 'Mailboxes', run: () => (setActiveLabel(null), setCurrent(UNIFIED)) }] : []),
     ...mailboxes.map((b) => ({
       id: `box:${b.path}`,
       title: `Go to ${b.path.toUpperCase() === 'INBOX' ? 'Inbox' : b.path}`,
@@ -815,7 +879,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       run: () => (setActiveLabel(null), setCurrent(b.path)),
     })),
     ...(hasTargets
-      ? folders.map((b) => ({ id: `move:${b.path}`, title: `Move to ${b.path.toUpperCase() === 'INBOX' ? 'Inbox' : b.path}`, group: 'Move', run: () => void move({ path: b.path }) }))
+      ? foldersFor(targets).map((b) => ({ id: `move:${b.path}`, title: `Move to ${b.path.toUpperCase() === 'INBOX' ? 'Inbox' : b.path}`, group: 'Move', run: () => void move({ path: b.path }) }))
       : []),
     ...labelList.map((l) => ({
       id: `label:${l.id}`,
@@ -860,7 +924,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       { id: 'archive', label: 'Archive', accelerator: acc('archive') },
       { id: 'trash', label: box?.specialUse === 'trash' ? 'Delete Permanently' : 'Move to Trash', accelerator: acc('trash') },
       { id: 'junk', label: 'Mark as Junk', accelerator: acc('junk'), enabled: box?.specialUse !== 'junk' },
-      { label: 'Move To', submenu: folders.map((b) => ({ id: `move:${b.path}`, label: b.path.toUpperCase() === 'INBOX' ? 'Inbox' : b.path })) },
+      { label: 'Move To', enabled: foldersFor(keys).length > 0, submenu: foldersFor(keys).map((b) => ({ id: `move:${b.path}`, label: b.path.toUpperCase() === 'INBOX' ? 'Inbox' : b.path })) },
       { separator: true },
       { id: 'read', label: list.every((m) => m.seen) ? 'Mark as Unread' : 'Mark as Read', accelerator: acc('toggleRead') },
       { id: 'flag', label: list.every((m) => m.flagged) ? 'Unflag' : 'Flag', accelerator: acc('toggleFlag') },
@@ -939,7 +1003,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   async function refreshAll() {
     setRefreshing(true)
     // Sync brings in server changes; its 'mailbox-synced' event rereads the list.
-    await Promise.all([refreshMailboxes(), mail.sync(current).catch((err) => setListError(errorMessage(err)))])
+    await Promise.all([refreshMailboxes(), syncView(current).catch((err) => setListError(errorMessage(err)))])
     setRefreshing(false)
   }
 
@@ -969,6 +1033,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
           if (id && inbox && current !== inbox.path) setCurrent(inbox.path)
         }}
         onSettings={() => setSettingsTab('general')}
+        unified={accounts.length > 1 ? { active: current === UNIFIED, unread: accounts.reduce((n, a) => n + a.unread, 0) } : null}
+        onUnified={() => (setActiveLabel(null), setCurrent(UNIFIED))}
         onHide={toggleSidebar}
         collapsed={sections}
         onToggleCollapsed={(key) => setSections((list) => (list.includes(key) ? list.filter((k) => k !== key) : [...list, key]))}
@@ -985,10 +1051,11 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       <MessageList
         listRef={listRef}
         searchRef={searchRef}
-        title={(activeLabel && labelMap.get(activeLabel)?.name) || box?.name || ''}
+        title={current === UNIFIED ? 'All Inboxes' : (activeLabel && labelMap.get(activeLabel)?.name) || box?.name || ''}
         labels={labelMap}
         mailbox={current}
         mailboxNames={mailboxNames}
+        accountNames={current === UNIFIED ? accountNames : undefined}
         unread={box?.specialUse === 'inbox' ? box.unread : 0}
         messages={visible}
         selected={selected}
@@ -1008,6 +1075,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         onLoadMore={loadMore}
       />
       )}
+      <AccountContext.Provider value={contexts.get(detail?.account ?? summary?.account ?? account.id) ?? { account, mail }}>
       <Reader
         // A message opened from outside the list (a notification for an older message) still shows.
         summary={summary ?? (detail?.key === selected ? detail : null)}
@@ -1055,15 +1123,19 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
             : undefined
         }
       />
+      </AccountContext.Provider>
       {assistantOpen && (
+        <AccountContext.Provider value={contexts.get(detail?.account ?? account.id) ?? { account, mail }}>
         <Assistant
           message={detail?.key === selected ? detail : null}
           onClose={() => setAssistantOpen(false)}
           closeHint={hint('assistant')}
           onUseAsReply={(text) => reply('reply', { text })}
         />
+        </AccountContext.Provider>
       )}
       {composer && (
+        <AccountContext.Provider value={contexts.get(composer.account) ?? { account, mail }}>
         <Composer
           initial={composer.draft}
           title={composer.title}
@@ -1085,6 +1157,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
             else if (detail) patchMessages([detail.key], (m) => ({ ...m, answered: true }))
           }}
         />
+        </AccountContext.Provider>
       )}
       {paletteOpen && <Palette items={paletteItems()} initialQuery={paletteQuery} onClose={() => setPaletteOpen(false)} />}
       {!layout.sidebarHidden && (
