@@ -28,6 +28,16 @@ const PAGE_SIZE = 50
 const INITIAL_WINDOW = 300
 const OLDER_BATCH = 100
 const PREVIEW_BATCH = 60
+/** Newest messages per mailbox whose source is downloaded ahead of time, so they open instantly. */
+const BODY_PREFETCH = 40
+/** Sources larger than this (mostly attachments) are fetched when opened, not kept. */
+const MAX_CACHED_BODY = 2_000_000
+
+/**
+ * Connections: `main` runs syncs, previews and changes; `reader` only opens messages, so opening never
+ * waits behind a sync of another folder.
+ */
+type Lane = 'main' | 'reader'
 
 const SPECIAL_USE: Record<string, SpecialUse> = {
   '\\Inbox': 'inbox',
@@ -49,8 +59,8 @@ type Listener = (event: MailEvent) => void
  * shows up without polling and without the watcher losing its selected mailbox.
  */
 export class MailService {
-  private client: ImapFlow | null = null
-  private connecting: Promise<ImapFlow> | null = null
+  private clients: Record<Lane, ImapFlow | null> = { main: null, reader: null }
+  private connecting: Record<Lane, Promise<ImapFlow> | null> = { main: null, reader: null }
   private watcher: ImapFlow | null = null
   private watcherRetry: NodeJS.Timeout | null = null
   private stopped = false
@@ -82,13 +92,16 @@ export class MailService {
   start(): void {
     this.stopped = false
     void this.startWatcher()
+    // Logging in takes a second or two, so the first message opened should not wait for it.
+    void this.connection('reader').catch(() => {})
   }
 
   async stop(): Promise<void> {
     this.stopped = true
     if (this.watcherRetry) clearTimeout(this.watcherRetry)
-    const clients = [this.client, this.watcher].filter((c): c is ImapFlow => !!c)
-    this.client = this.watcher = null
+    const clients = [this.clients.main, this.clients.reader, this.watcher].filter((c): c is ImapFlow => !!c)
+    this.clients = { main: null, reader: null }
+    this.watcher = null
     await Promise.all(clients.map((c) => c.logout().catch(() => c.close())))
   }
 
@@ -264,8 +277,9 @@ export class MailService {
     void (async () => {
       try {
         while (await this.fetchPreviews(path)) this.emit({ type: 'mailbox-synced', mailbox: path })
+        await this.prefetchBodies(path)
       } catch {
-        // Previews are a nicety; the next sync tries again.
+        // Previews and prefetched bodies are a nicety; the next sync tries again.
       } finally {
         this.filling.delete(path)
       }
@@ -326,27 +340,57 @@ export class MailService {
     return store.search([this.account.id], query)
   }
 
+  /** Opens a message from its cached source when there is one, otherwise from the server. */
   async getMessage(path: string, uid: number): Promise<MessageDetail> {
-    return this.withMailbox(path, async (client) => {
-      const msg = await client.fetchOne(String(uid), { ...SUMMARY_QUERY, source: true }, { uid: true })
-      if (!msg || !msg.source) throw new Error('Message not found. It may have been moved or deleted.')
-      const parsed = await simpleParser(msg.source)
-      this.rememberParsed(path, uid, parsed)
-      const summary = this.toSummary(path, msg)
-      const { html, attachments } = inlineImages(parsed)
-      return {
-        ...summary,
-        cc: addresses(parsed.cc),
-        bcc: addresses(parsed.bcc),
-        replyTo: addresses(parsed.replyTo),
-        inReplyTo: parsed.inReplyTo,
-        messageId: parsed.messageId,
-        references: toArray(parsed.references),
-        html,
-        text: parsed.text,
-        attachments,
-      }
-    })
+    const cached = store.getBody(this.account.id, path, uid)
+    const row = cached && store.getMessages(this.account.id, path, [uid])[0]
+    if (cached && row) return this.toDetail(path, uid, row, await simpleParser(cached))
+    return this.withMailbox(
+      path,
+      async (client) => {
+        const msg = await client.fetchOne(String(uid), { ...SUMMARY_QUERY, source: true }, { uid: true })
+        if (!msg || !msg.source) throw new Error('Message not found. It may have been moved or deleted.')
+        if (msg.source.length <= MAX_CACHED_BODY) store.saveBody(this.account.id, path, uid, msg.source)
+        return this.toDetail(path, uid, this.toSummary(path, msg), await simpleParser(msg.source))
+      },
+      'reader',
+    )
+  }
+
+  private toDetail(path: string, uid: number, summary: MessageSummary, parsed: ParsedMail): MessageDetail {
+    this.rememberParsed(path, uid, parsed)
+    const { html, attachments } = inlineImages(parsed)
+    return {
+      ...summary,
+      cc: addresses(parsed.cc),
+      bcc: addresses(parsed.bcc),
+      replyTo: addresses(parsed.replyTo),
+      inReplyTo: parsed.inReplyTo,
+      messageId: parsed.messageId,
+      references: toArray(parsed.references),
+      html,
+      text: parsed.text,
+      attachments,
+    }
+  }
+
+  /** Downloads the sources of the newest messages ahead of time, a few per lock so other work interleaves. */
+  private async prefetchBodies(path: string): Promise<void> {
+    const id = this.account.id
+    const missing = store.missingBodies(id, path, BODY_PREFETCH)
+    for (let i = 0; i < missing.length && !this.stopped; i += 10) {
+      await this.withMailbox(path, async (client) => {
+        const small: number[] = []
+        for await (const msg of client.fetch(missing.slice(i, i + 10), { uid: true, size: true }, { uid: true })) {
+          if ((msg.size ?? Infinity) <= MAX_CACHED_BODY) small.push(msg.uid)
+        }
+        if (!small.length) return
+        for await (const msg of client.fetch(small, { uid: true, source: true }, { uid: true })) {
+          if (msg.source) store.saveBody(id, path, msg.uid, msg.source)
+        }
+      })
+    }
+    store.pruneBodies()
   }
 
   async setFlags(path: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }): Promise<void> {
@@ -589,9 +633,9 @@ export class MailService {
     if (this.parsedCache.size > 20) this.parsedCache.delete(this.parsedCache.keys().next().value!)
   }
 
-  private async withMailbox<T>(path: string, fn: (client: ImapFlow) => Promise<T>): Promise<T> {
+  private async withMailbox<T>(path: string, fn: (client: ImapFlow) => Promise<T>, lane: Lane = 'main'): Promise<T> {
     for (let attempt = 0; ; attempt++) {
-      const client = await this.connection()
+      const client = await this.connection(lane)
       let lock: MailboxLockObject | undefined
       try {
         lock = await client.getMailboxLock(path)
@@ -599,7 +643,7 @@ export class MailService {
       } catch (error) {
         // A dropped socket surfaces as an error on the next command; reconnect once.
         if (attempt === 0 && !client.usable) {
-          this.client = null
+          if (this.clients[lane] === client) this.clients[lane] = null
           continue
         }
         throw error
@@ -609,22 +653,25 @@ export class MailService {
     }
   }
 
-  private async connection(): Promise<ImapFlow> {
-    if (this.client?.usable) return this.client
-    if (this.connecting) return this.connecting
-    this.connecting = (async () => {
+  private async connection(lane: Lane = 'main'): Promise<ImapFlow> {
+    const current = this.clients[lane]
+    if (current?.usable) return current
+    const pending = this.connecting[lane]
+    if (pending) return pending
+    const connecting = (async () => {
       const client = createClient(this.account)
       client.on('error', () => {})
       client.on('close', () => {
-        if (this.client === client) this.client = null
+        if (this.clients[lane] === client) this.clients[lane] = null
       })
       await client.connect()
-      this.client = client
+      this.clients[lane] = client
       return client
     })().finally(() => {
-      this.connecting = null
+      this.connecting[lane] = null
     })
-    return this.connecting
+    this.connecting[lane] = connecting
+    return connecting
   }
 
   private async startWatcher(): Promise<void> {
