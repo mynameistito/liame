@@ -20,7 +20,7 @@ jobs:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v6
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.0
       - uses: actions/cache@v5
@@ -39,7 +39,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.0
       - uses: actions/cache@v5
@@ -120,6 +120,9 @@ jobs:
             # An earlier run stopped partway; finish it.
             gh release upload "$tag" "${{ steps.zip.outputs.name }}" --clobber
             gh release edit "$tag" --draft=false --target "$GITHUB_SHA"
+          elif git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "::error::Tag $tag exists without a release; bump the version or remove the tag."
+            exit 1
           else
             gh release create "$tag" "${{ steps.zip.outputs.name }}" --title "$tag" --target "$GITHUB_SHA" --generate-notes
           fi
