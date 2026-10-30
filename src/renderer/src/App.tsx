@@ -204,6 +204,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const currentRef = useRef(current)
   currentRef.current = current
   const detailRequest = useRef(0)
+  const autoReadRequest = useRef<number | null>(null)
   const loadingMore = useRef(false)
   const classifying = useRef(new Set<string>())
   const mailboxesRef = useRef(mailboxes)
@@ -495,6 +496,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       const target = sourceRef.current.find((m) => m.key === key) ?? row
       if (!target) return
       const request = ++detailRequest.current
+      autoReadRequest.current = request
       setDetail(null)
       setThread(null)
       setExpanded({})
@@ -518,6 +520,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
             // Only count it as read if it is still the open message.
             if (selectedRef.current !== key || request !== detailRequest.current) return
           }
+          // Explicit read/unread actions take precedence over this open's automatic write.
+          if (autoReadRequest.current !== request) return
           // A conversation row is unread when any of its messages here is, even if the newest one was read.
           if (!target.seen || !message.seen) {
             patchMessages([key], (m) => ({ ...m, seen: true }))
@@ -687,6 +691,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     async (flag: 'seen' | 'flagged', force?: boolean, keys: string[] = targets) => {
       const list = rowsFor(keys)
       if (list.length === 0) return
+      if (flag === 'seen' && keys.includes(selectedRef.current!)) autoReadRequest.current = null
       const value = force ?? !list.every((m) => m[flag])
       const changed = list.filter((m) => m[flag] !== value)
       if (changed.length === 0) return
