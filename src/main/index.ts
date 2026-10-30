@@ -288,6 +288,24 @@ function registerIpc(): void {
     service(id).listMessages(path, offset, limit, threads),
   )
   handle('getThread', (id: string, thread: string) => service(id).getThread(thread))
+  handle('listUnified', async (offset: number = 0, limit: number = 50, threads: boolean = false) => {
+    // Each inbox is already sorted by date; read enough of each to fill this page, then merge.
+    const pages = await Promise.all([...services.values()].map((svc) => svc.listMessages(svc.inboxPath(), 0, offset + limit, threads).catch(() => null)))
+    const merged = pages
+      .flatMap((page) => page?.messages ?? [])
+      .sort((a, b) => Date.parse(b.date) - Date.parse(a.date))
+    return {
+      mailbox: '',
+      messages: merged.slice(offset, offset + limit),
+      hasMore: merged.length > offset + limit || pages.some((page) => page?.hasMore),
+    }
+  })
+  handle('syncInboxes', async () => {
+    await Promise.all([...services.values()].map((svc) => svc.sync(svc.inboxPath()).catch(() => {})))
+  })
+  handle('markAllInboxesRead', async () => {
+    await Promise.all([...services.values()].map((svc) => svc.markAllRead(svc.inboxPath())))
+  })
   handle('sync', (id: string, path: string) => service(id).sync(path))
   handle('search', (id: string, path: string, query: string) => service(id).search(path, query))
   handle('searchLocal', (ids: string[], query: string) => store.search(ids.filter((id) => services.has(id)), query))

@@ -143,6 +143,11 @@ export class MailService {
     return { mailbox: path, messages, hasMore: messages.length === limit || this.hasOlderOnServer(path) }
   }
 
+  /** The server's Inbox path (always INBOX in practice; read from the folder list when known). */
+  inboxPath(): string {
+    return this.mailboxes.find((box) => box.specialUse === 'inbox')?.path ?? 'INBOX'
+  }
+
   /** The conversation oldest first, one entry per message even when the server keeps copies in several folders. */
   getThread(thread: string): MessageSummary[] {
     const allMail = this.mailboxes.find((box) => box.specialUse === 'all')?.path
@@ -375,7 +380,7 @@ export class MailService {
       )
       // UIDPLUS tells us the new UIDs; without it the move cannot be undone precisely.
       const newUids = moved && moved.uidMap ? uids.map((uid) => moved.uidMap!.get(uid)).filter((uid): uid is number => uid !== undefined) : []
-      return newUids.length === uids.length ? { from: path, to: destination, uids: newUids } : null
+      return newUids.length === uids.length ? { account: this.account.id, from: path, to: destination, uids: newUids } : null
     })
     this.emit({ type: 'mailboxes-changed' })
     return result

@@ -56,14 +56,14 @@ function decisionModel(settings: Settings): Experimental_DecisionModel | null {
 }
 
 /** Returns a label (or null) for every item: stored answers first, then one decision call per new message. */
-export async function classify(items: ClassifyItem[], settings: Settings): Promise<Record<number, string | null>> {
+export async function classify(items: ClassifyItem[], settings: Settings): Promise<Record<string, string | null>> {
   const s = await load()
   const valid = new Set(settings.labels.list.map((l) => l.id))
-  const out: Record<number, string | null> = {}
+  const out: Record<string, string | null> = {}
   const todo: ClassifyItem[] = []
   for (const item of items) {
     const stored = s.messages[keyOf(item)]
-    if (stored) out[item.uid] = stored.label && valid.has(stored.label) ? stored.label : null
+    if (stored) out[item.key] = stored.label && valid.has(stored.label) ? stored.label : null
     else todo.push(item)
   }
 
@@ -92,7 +92,7 @@ export async function classify(items: ClassifyItem[], settings: Settings): Promi
         const p = probabilities?.[choice] ?? 1
         const label = choice !== NONE && p >= MIN_PROBABILITY ? choice : null
         s.messages[keyOf(item)] = { label, source: 'ai' }
-        out[item.uid] = label
+        out[item.key] = label
       } catch {
         // Leave it unlabeled and try again next time the list loads.
       }

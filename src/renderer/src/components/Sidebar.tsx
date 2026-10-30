@@ -5,6 +5,7 @@ import {
   Flag,
   Folder,
   Inbox,
+  Layers,
   LogOut,
   type LucideIcon,
   Mails,
@@ -46,6 +47,9 @@ interface Props {
   onLabel: (id: string | null) => void
   onSettings: () => void
   onHide: () => void
+  /** All Inboxes, offered when there is more than one account. */
+  unified: { active: boolean; unread: number } | null
+  onUnified: () => void
   composeHint: string
   onSelect: (path: string) => void
   onCompose: () => void
@@ -95,8 +99,15 @@ export function Sidebar(props: Props) {
 
       <nav className="nav">
         <Section title="Mailboxes" open={isOpen('mailboxes')} onToggle={() => onToggleCollapsed('mailboxes')}>
+          {props.unified && (
+            <button className={`nav-item ${props.unified.active ? 'active' : ''}`} onClick={props.onUnified}>
+              <Layers size={15} strokeWidth={1.8} />
+              <span className="name">All Inboxes</span>
+              {props.unified.unread > 0 && <span className="count unread">{props.unified.unread}</span>}
+            </button>
+          )}
           {special.map((box) => (
-            <Item key={box.path} box={box} icon={ICONS[box.specialUse!]} active={box.path === current && !activeLabel} onSelect={props.onSelect} />
+            <Item key={box.path} box={box} icon={ICONS[box.specialUse!]} active={box.path === current && !activeLabel && !props.unified?.active} onSelect={props.onSelect} />
           ))}
         </Section>
         {labels.length > 0 && (

@@ -136,7 +136,7 @@ export function toContext(m: MessageDetail): MessageContext {
 }
 
 export function classifyItem(m: MessageSummary): ClassifyItem {
-  return { uid: m.uid, messageId: m.messageId, from: formatAddress(m.from), subject: m.subject, preview: m.preview ?? '' }
+  return { key: m.key, messageId: m.messageId, from: formatAddress(m.from), subject: m.subject, preview: m.preview ?? '' }
 }
 
 /** UI state that should survive restarts (pane widths, collapsed sections). Local to this Mac, so localStorage is enough. */
