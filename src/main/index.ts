@@ -6,6 +6,7 @@ import type {
   AccountConfig,
   AccountInput,
   AccountSummary,
+  AiEvent,
   AiTask,
   ClassifyItem,
   ConnectionStatus,
@@ -20,6 +21,7 @@ import type {
 } from '../shared/types'
 import { loadAccounts, storeAccounts, toPublic, upsert } from './account'
 import { cancelTask, closeAi, listModels, startTask } from './ai'
+import { dailyDigest, withConversation } from './context'
 import { classify, setLabel } from './labels'
 import { MailService } from './mail'
 import { addReminder, addSnooze, cancel, dropSnoozed, listItems, queueSend, remindAfterSend, startScheduler } from './schedule'
@@ -395,12 +397,27 @@ function registerIpc(): void {
   handle('aiModels', async () => listModels(await loadSettings()))
   handle('aiStart', async (taskId: string, task: AiTask, id: string) => {
     const settings = await loadSettings()
+    const emit = (event: AiEvent) => window?.webContents.send('liame:ai', event)
     // Streams back over liame:ai events; the invoke itself returns right away.
-    void startTask(taskId, task, settings, accountOf(id), (event) => window?.webContents.send('liame:ai', event))
+    void startTask(taskId, task, settings, accountOf(id), emit, (t, signal) => prepareTask(t, id, signal))
   })
   handle('aiCancel', (taskId: string) => cancelTask(taskId))
   handle('classify', async (items: ClassifyItem[]) => classify(items, await loadSettings()))
   handle('setLabel', (item: ClassifyItem, label: string | null) => setLabel(item, label))
+}
+
+/** Adds what the model needs and the renderer does not have: the rest of a conversation, or the mail for a brief. */
+async function prepareTask(task: AiTask, id: string, signal: AbortSignal): Promise<AiTask> {
+  if (task.kind === 'brief') {
+    const live = [...services.values()]
+    return { ...task, digest: dailyDigest(live, listItems().filter((item) => services.has(item.account))) }
+  }
+  if ((task.kind === 'reply' || task.kind === 'ask') && task.message) {
+    // Offline the reply is drafted from the open message alone.
+    const message = await withConversation(service(id), task.message, signal).catch(() => task.message!)
+    return { ...task, message }
+  }
+  return task
 }
 
 /** Loads the attachments a reopened draft still carries from its saved copy. */

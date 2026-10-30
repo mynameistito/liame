@@ -235,6 +235,11 @@ export interface MessageContext {
   date: string
   subject: string
   text: string
+  /** Its conversation, for the main process to read the other messages from. */
+  thread?: string
+  messageId?: string
+  /** The conversation's other messages, oldest first; filled in by the main process. */
+  conversation?: MessageContext[]
 }
 
 export type RewriteMode = 'improve' | 'shorten' | 'friendlier' | 'formal' | 'fix'
@@ -249,6 +254,8 @@ export type AiTask =
   | { kind: 'compose'; instruction: string; subject?: string }
   | { kind: 'rewrite'; text: string; mode: RewriteMode }
   | { kind: 'ask'; message?: MessageContext; history: ChatTurn[] }
+  /** A short rundown of unread mail and what is scheduled, across accounts. The main process fills in `digest`. */
+  | { kind: 'brief'; digest?: string }
 
 export interface AiEvent {
   id: string

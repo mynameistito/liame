@@ -16,6 +16,7 @@ export type CommandId =
   | 'previous'
   | 'search'
   | 'assistant'
+  | 'brief'
   | 'refresh'
   | 'goInbox'
   | 'filterAll'
@@ -88,6 +89,7 @@ export const COMMANDS: CommandDef[] = [
   { id: 'toggleSidebar', title: 'Show / hide sidebar', group: 'View', keys: ['Control+Meta+s'], global: true },
   { id: 'toggleList', title: 'Show / hide message list', group: 'View', keys: ['Control+Meta+l'], global: true },
   { id: 'assistant', title: 'Toggle assistant', group: 'App', keys: ['Meta+i'], global: true },
+  { id: 'brief', title: 'Daily brief', group: 'App', keys: [] },
   { id: 'refresh', title: 'Check for new mail', group: 'App', keys: ['Shift+Meta+n'], global: true },
   { id: 'settings', title: 'Settings', group: 'App', keys: ['Meta+,'], global: true },
   { id: 'shortcuts', title: 'Keyboard shortcuts', group: 'App', keys: ['?'] },

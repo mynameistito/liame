@@ -168,6 +168,8 @@ export function toContext(m: MessageDetail): MessageContext {
     date: longDate(m.date),
     subject: m.subject,
     text: m.text ?? '',
+    thread: m.thread,
+    messageId: m.messageId,
   }
 }
 

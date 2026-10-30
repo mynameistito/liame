@@ -61,10 +61,23 @@ export async function listModels(settings: Settings): Promise<{ models: string[]
   return { models: models.filter((m) => !m.hidden).map((m) => m.id), defaultModel: defaultModel?.id }
 }
 
-export async function startTask(id: string, task: AiTask, settings: Settings, account: AccountConfig, emit: (event: AiEvent) => void) {
+/** Streams a task's output. `prepare` adds context first (the conversation, the brief's mail); Stop works during it too. */
+export async function startTask(
+  id: string,
+  task: AiTask,
+  settings: Settings,
+  account: AccountConfig,
+  emit: (event: AiEvent) => void,
+  prepare: (task: AiTask, signal: AbortSignal) => Promise<AiTask> = async (t) => t,
+) {
   const controller = new AbortController()
   running.set(id, controller)
   try {
+    // Stop ends the task at once, even while slow context reads are still under way (they stop at the next message).
+    const stopped = new Promise<null>((resolve) => controller.signal.addEventListener('abort', () => resolve(null), { once: true }))
+    const ready = await Promise.race([prepare(task, controller.signal), stopped])
+    if (!ready || controller.signal.aborted) return emit({ id, done: true })
+    task = ready
     const { model, system } = await languageModel(settings)
     const instructions = systemPrompt(account)
     const messages = buildMessages(task)
@@ -121,6 +134,14 @@ function quoteMessage(m: MessageContext): string {
   return [`From: ${m.from}`, `To: ${m.to}`, `Date: ${m.date}`, `Subject: ${m.subject}`, '', m.text.slice(0, MAX_BODY)].join('\n')
 }
 
+/** The email, preceded by the rest of its conversation when there is one. */
+function quoteWithConversation(m: MessageContext): string {
+  const email = `<email>\n${quoteMessage(m)}\n</email>`
+  if (!m.conversation?.length) return email
+  const others = m.conversation.map((c) => `<message>\n${quoteMessage(c)}\n</message>`).join('\n')
+  return `<conversation note="the other messages of this thread, oldest first">\n${others}\n</conversation>\n\n${email}`
+}
+
 function buildMessages(task: AiTask): ModelMessage[] {
   switch (task.kind) {
     case 'reply':
@@ -129,12 +150,13 @@ function buildMessages(task: AiTask): ModelMessage[] {
           role: 'user',
           content: [
             'Write my reply to this email.',
+            task.message.conversation?.length
+              ? "The rest of the conversation comes first. Use it so the reply doesn't repeat or contradict what was already said."
+              : '',
             task.instruction ? `What I want to say: ${task.instruction}` : 'Write the reply I would most likely send.',
             task.draft?.trim() ? `Build on what I already started writing:\n${task.draft.trim()}` : '',
             '',
-            '<email>',
-            quoteMessage(task.message),
-            '</email>',
+            quoteWithConversation(task.message),
           ]
             .filter((line) => line !== '')
             .join('\n'),
@@ -147,11 +169,29 @@ function buildMessages(task: AiTask): ModelMessage[] {
           content: `Write a new email body.${task.subject ? ` Subject: ${task.subject}.` : ''}\nWhat it should say: ${task.instruction}`,
         },
       ]
+    case 'brief':
+      return [
+        {
+          role: 'user',
+          content: [
+            `Give me a short brief of my mail. It is now ${new Date().toString()}. Plain text, no headings or bold.`,
+            'Start with what needs a reply or a decision from me, one line each: who, what they need, and any deadline.',
+            'Then one line naming the rest that is worth reading. Skip newsletters, notifications, and receipts unless something in them needs action.',
+            'End with replies I am still waiting for and what is coming up today. Leave that out entirely when there are none.',
+            'If nothing at all needs a reply or decision, say just "Nothing urgent." and stop.',
+            'Keep it under 150 words. Do not invent anything that is not in the list.',
+            '',
+            '<mail>',
+            task.digest || 'No unread mail and nothing scheduled.',
+            '</mail>',
+          ].join('\n'),
+        },
+      ]
     case 'rewrite':
       return [{ role: 'user', content: `${REWRITE[task.mode]}\n\n<text>\n${task.text}\n</text>` }]
     case 'ask': {
       const context = task.message
-        ? `I am looking at this email. Answer questions about it, and when I ask for a reply or draft, write only the draft.\n\n<email>\n${quoteMessage(task.message)}\n</email>`
+        ? `I am looking at this email. Answer questions about it and its conversation, and when I ask for a reply or draft, write only the draft.\n\n${quoteWithConversation(task.message)}`
         : 'Help me with my email.'
       return [
         { role: 'user', content: context },
