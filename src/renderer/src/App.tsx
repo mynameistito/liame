@@ -468,6 +468,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     }
     const path = current
     let stale = false
+    let remoteTimer: number | undefined
     const timer = window.setTimeout(async () => {
       try {
         const local = path === UNIFIED ? await api.searchLocal(accounts.map((a) => a.id), q) : await mail.searchLocal(q)
@@ -475,17 +476,25 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         setResults(local)
         // The server can only search one folder; All Inboxes stays with the local results.
         if (path === UNIFIED) return
-        const remote = await mail.search(path, q)
-        if (stale || currentRef.current !== path) return
-        const known = new Set(local.map((m) => m.key))
-        setResults([...local, ...remote.filter((m) => !known.has(m.key))].sort((a, b) => Date.parse(b.date) - Date.parse(a.date)))
+        // Show cheap local matches early without issuing more IMAP searches while typing.
+        remoteTimer = window.setTimeout(async () => {
+          try {
+            const remote = await mail.search(path, q)
+            if (stale || currentRef.current !== path) return
+            const known = new Set(local.map((m) => m.key))
+            setResults([...local, ...remote.filter((m) => !known.has(m.key))].sort((a, b) => Date.parse(b.date) - Date.parse(a.date)))
+          } catch (err) {
+            if (!stale && currentRef.current === path) setListError(errorMessage(err))
+          }
+        }, 140)
       } catch (err) {
-        setListError(errorMessage(err))
+        if (!stale && currentRef.current === path) setListError(errorMessage(err))
       }
-    }, 200)
+    }, 60)
     return () => {
       stale = true
       window.clearTimeout(timer)
+      window.clearTimeout(remoteTimer)
     }
   }, [query, current, searchRun])
 
@@ -522,15 +531,16 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
           }
           // Explicit read/unread actions take precedence over this open's automatic write.
           if (autoReadRequest.current !== request) return
-          // A conversation row is unread when any of its messages here is, even if the newest one was read.
-          if (!target.seen || !message.seen) {
+          // Validate the displayed UID generation before changing either server or local flags.
+          await mailFor(target.account).setFlags(target.mailbox, target.threadUids ?? [target.uid], { seen: true }, message.uidValidity)
+          if (selectedRef.current !== key || request !== detailRequest.current || autoReadRequest.current !== request) return
+          // A manual action or sync may have marked it read while the server write was pending.
+          const latest = sourceRef.current.find((m) => m.key === key) ?? (detailRef.current?.key === key ? detailRef.current : message)
+          if (!latest.seen) {
             patchMessages([key], (m) => ({ ...m, seen: true }))
             if (target.account === account.id)
               setMailboxes((boxes) => boxes.map((b) => (b.path === target.mailbox ? { ...b, unread: Math.max(0, b.unread - 1) } : b)))
           }
-          // Opening a conversation reads all of it. Sent even when the local copy already says read: a message
-          // opened from the cache may have been marked unread elsewhere since the last sync.
-          await mailFor(target.account).setFlags(target.mailbox, target.threadUids ?? [target.uid], { seen: true })
         }
       } catch (err) {
         if (request === detailRequest.current) setDetailError(errorMessage(err))

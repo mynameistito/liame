@@ -1,5 +1,5 @@
 import { Flag, PanelLeft, Paperclip, Search, X } from 'lucide-react'
-import { useEffect, useRef, type Ref, type RefObject } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, type Ref, type RefObject } from 'react'
 import type { LabelDef, MessageSummary } from '../../../shared/types'
 import { displayName, shortDate } from '../lib'
 
@@ -39,6 +39,14 @@ interface Props {
 export function MessageList(props: Props) {
   const { listRef, title, unread, messages, selected, loading, error, query, filter, hasMore, showRecipient } = props
   const sentinel = useRef<HTMLDivElement>(null)
+  // Rows keep stable event props while always invoking the latest selection/menu logic.
+  const handlers = useRef(props)
+  useLayoutEffect(() => {
+    handlers.current = props
+  })
+  const onPick = useCallback<Props['onPick']>((key, mods) => handlers.current.onPick(key, mods), [])
+  const onMenu = useCallback((key: string) => handlers.current.onRowMenu(key), [])
+  const checked = new Set(props.checked)
 
   // Fetch the next page when the end of the list scrolls into view.
   useEffect(() => {
@@ -117,10 +125,10 @@ export function MessageList(props: Props) {
                   : undefined
             }
             selected={m.key === selected}
-            checked={props.checked.includes(m.key)}
+            checked={checked.has(m.key)}
             showRecipient={showRecipient}
-            onPick={props.onPick}
-            onMenu={props.onRowMenu}
+            onPick={onPick}
+            onMenu={onMenu}
           />
         ))}
         {hasMore && <div ref={sentinel} className="list-loading">Loading</div>}
@@ -141,7 +149,7 @@ interface RowProps {
   folder?: string
 }
 
-function Row({ message: m, label, folder, selected, checked, showRecipient, onPick, onMenu }: RowProps) {
+const Row = memo(function Row({ message: m, label, folder, selected, checked, showRecipient, onPick, onMenu }: RowProps) {
   const conversation = (m.threadCount ?? 1) > 1
   // A conversation row names everyone in it; a single message names its sender (or recipients in Sent).
   const who = showRecipient
@@ -189,7 +197,7 @@ function Row({ message: m, label, folder, selected, checked, showRecipient, onPi
       <div className="row-preview">{m.preview ?? ''}</div>
     </button>
   )
-}
+})
 
 function Skeleton() {
   return (

@@ -344,7 +344,11 @@ export class MailService {
   async getMessage(path: string, uid: number): Promise<MessageDetail> {
     const cached = store.getBody(this.account.id, path, uid)
     const row = cached && store.getMessages(this.account.id, path, [uid])[0]
-    if (cached && row) return this.toDetail(path, uid, row, await simpleParser(cached))
+    if (cached && row) {
+      // Capture the same local snapshot before parsing yields to a sync that may replace its UIDs.
+      const validity = store.mailboxState(this.account.id, path)?.uidvalidity ?? ''
+      return this.toDetail(path, uid, row, await simpleParser(cached), validity)
+    }
     return this.withMailbox(
       path,
       async (client) => {
@@ -352,17 +356,18 @@ export class MailService {
         if (!msg || !msg.source) throw new Error('Message not found. It may have been moved or deleted.')
         const validity = String(client.mailbox ? client.mailbox.uidValidity : '')
         if (msg.source.length <= MAX_CACHED_BODY) store.saveBody(this.account.id, path, uid, validity, msg.envelope?.messageId, msg.source)
-        return this.toDetail(path, uid, this.toSummary(path, msg), await simpleParser(msg.source))
+        return this.toDetail(path, uid, this.toSummary(path, msg), await simpleParser(msg.source), validity)
       },
       'reader',
     )
   }
 
-  private toDetail(path: string, uid: number, summary: MessageSummary, parsed: ParsedMail): MessageDetail {
+  private toDetail(path: string, uid: number, summary: MessageSummary, parsed: ParsedMail, uidValidity: string): MessageDetail {
     this.rememberParsed(path, uid, parsed)
     const { html, attachments } = inlineImages(parsed)
     return {
       ...summary,
+      uidValidity,
       cc: addresses(parsed.cc),
       bcc: addresses(parsed.bcc),
       replyTo: addresses(parsed.replyTo),
@@ -394,8 +399,12 @@ export class MailService {
     }
   }
 
-  async setFlags(path: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }): Promise<void> {
+  async setFlags(path: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }, expectedUidValidity?: string): Promise<void> {
     await this.withMailbox(path, async (client) => {
+      // Compare the displayed snapshot to the selected server mailbox, not the possibly stale local state.
+      if (expectedUidValidity !== undefined && (!expectedUidValidity || !client.mailbox || String(client.mailbox.uidValidity) !== expectedUidValidity)) {
+        throw new Error('This folder changed since the message was opened. Refresh it before changing flags.')
+      }
       for (const [flag, name, on] of [['\\Seen', 'seen', flags.seen], ['\\Flagged', 'flagged', flags.flagged]] as const) {
         if (on === undefined) continue
         if (on) await client.messageFlagsAdd(uids, [flag], { uid: true })

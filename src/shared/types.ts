@@ -83,6 +83,8 @@ export interface Attachment {
 }
 
 export interface MessageDetail extends MessageSummary {
+  /** UIDVALIDITY of the displayed snapshot; pass back when automatically marking it read. */
+  uidValidity: string
   cc: Address[]
   bcc: Address[]
   replyTo: Address[]
@@ -297,7 +299,7 @@ export interface LiameApi {
   /** Instant search over every synced folder of the given accounts. */
   searchLocal(accountIds: string[], query: string): Promise<MessageSummary[]>
   getMessage(accountId: string, mailbox: string, uid: number): Promise<MessageDetail>
-  setFlags(accountId: string, mailbox: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }): Promise<void>
+  setFlags(accountId: string, mailbox: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }, expectedUidValidity?: string): Promise<void>
   move(accountId: string, mailbox: string, uids: number[], target: MoveTarget): Promise<MoveResult | null>
   markAllRead(accountId: string, mailbox: string): Promise<void>
   saveDraft(accountId: string, draft: Draft): Promise<number | null>

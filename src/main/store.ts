@@ -381,18 +381,26 @@ export function listThreads(account: string, mailbox: string, offset: number, li
   const d = open()
   const rows = d
     .prepare(
-      `SELECT * FROM (
-         SELECT *,
-           row_number() OVER (PARTITION BY thread ORDER BY date DESC, uid DESC) AS rn,
-           sum(seen = 0) OVER (PARTITION BY thread) AS unseen_here,
-           max(flagged) OVER (PARTITION BY thread) AS flagged_here,
-           json_group_array(uid) OVER (PARTITION BY thread ORDER BY date DESC, uid DESC ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS uids_here
-         FROM messages WHERE account = ? AND mailbox = ?
-       ) WHERE rn = 1 ORDER BY date DESC, uid DESC LIMIT ? OFFSET ?`,
+      // Rank only row identities; load full summaries and conversation aggregates for the requested page.
+      `SELECT m.* FROM messages m JOIN (
+         SELECT id, date, uid FROM (
+           SELECT id, date, uid, row_number() OVER (PARTITION BY thread ORDER BY date DESC, uid DESC) AS rn
+           FROM messages WHERE account = ? AND mailbox = ?
+         ) WHERE rn = 1 ORDER BY date DESC, uid DESC LIMIT ? OFFSET ?
+       ) page ON page.id = m.id ORDER BY m.date DESC, m.uid DESC`,
     )
-    .all(account, mailbox, limit, offset) as unknown as Array<Row & { unseen_here: number; flagged_here: number; uids_here: string }>
+    .all(account, mailbox, limit, offset) as unknown as Row[]
   if (!rows.length) return []
-  const threads = [...new Set(rows.map((r) => r.thread))]
+  // A single binding also handles deeply loaded unified inboxes without SQLite's variable limit.
+  const threads = JSON.stringify(rows.map((r) => r.thread))
+  const local = new Map(
+    (d.prepare(
+      `SELECT thread, sum(seen = 0) AS unseen_here, max(flagged) AS flagged_here, json_group_array(uid) AS uids_here FROM (
+         SELECT thread, seen, flagged, uid FROM messages INDEXED BY messages_by_thread WHERE account = ? AND mailbox = ? AND thread IN (SELECT value FROM json_each(?))
+         ORDER BY date DESC, uid DESC
+       ) GROUP BY thread`,
+    ).all(account, mailbox, threads) as Array<{ thread: string; unseen_here: number; flagged_here: number; uids_here: string }>).map((r) => [r.thread, r]),
+  )
   const stats = new Map(
     (
       d
@@ -400,22 +408,23 @@ export function listThreads(account: string, mailbox: string, offset: number, li
           // Gmail keeps one message in several folders (Inbox and All Mail); count each Message-ID once.
           `SELECT thread, count(DISTINCT coalesce(message_id, mailbox || '/' || uid)) AS total, json_group_array(from_name) AS names FROM (
              SELECT thread, from_name, message_id, mailbox, uid FROM messages
-             WHERE account = ? AND thread IN (${threads.map(() => '?').join(',')}) AND mailbox NOT IN (${exclude.map(() => '?').join(',') || "''"})
+             WHERE account = ? AND thread IN (SELECT value FROM json_each(?)) AND mailbox NOT IN (${exclude.map(() => '?').join(',') || "''"})
              ORDER BY date
            ) GROUP BY thread`,
         )
-        .all(account, ...threads, ...exclude) as Array<{ thread: string; total: number; names: string }>
+        .all(account, threads, ...exclude) as Array<{ thread: string; total: number; names: string }>
     ).map((s) => [s.thread, s]),
   )
   return rows.map((row) => {
     const stat = stats.get(row.thread)
+    const here = local.get(row.thread)!
     const names = stat ? (JSON.parse(stat.names) as string[]) : []
     return {
       ...toSummary(row),
-      seen: row.unseen_here === 0,
+      seen: here.unseen_here === 0,
       // Flagged when any message of the conversation here is.
-      flagged: row.flagged_here === 1,
-      threadUids: JSON.parse(row.uids_here) as number[],
+      flagged: here.flagged_here === 1,
+      threadUids: JSON.parse(here.uids_here) as number[],
       threadCount: stat?.total ?? 1,
       participants: [...new Set(names.filter(Boolean))],
     }

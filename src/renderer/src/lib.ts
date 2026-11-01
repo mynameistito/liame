@@ -19,7 +19,7 @@ export function mailApi(accountId: string) {
     search: (mailbox: string, query: string) => api.search(accountId, mailbox, query),
     searchLocal: (query: string) => api.searchLocal([accountId], query),
     getMessage: (mailbox: string, uid: number) => api.getMessage(accountId, mailbox, uid),
-    setFlags: (mailbox: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }) => api.setFlags(accountId, mailbox, uids, flags),
+    setFlags: (mailbox: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }, expectedUidValidity?: string) => api.setFlags(accountId, mailbox, uids, flags, expectedUidValidity),
     move: (mailbox: string, uids: number[], target: MoveTarget) => api.move(accountId, mailbox, uids, target),
     undoMove: (move: MoveResult) => api.undoMove(accountId, move),
     markAllRead: (mailbox: string) => api.markAllRead(accountId, mailbox),
