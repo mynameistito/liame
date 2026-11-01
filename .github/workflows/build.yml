@@ -30,6 +30,7 @@ jobs:
           restore-keys: ${{ runner.os }}-bun-
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      - run: bun test ./tests
       - run: bun run build
 
   mac:

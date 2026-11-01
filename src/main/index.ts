@@ -326,8 +326,8 @@ function registerIpc(): void {
   handle('search', (id: string, path: string, query: string) => service(id).search(path, query))
   handle('searchLocal', (ids: string[], query: string) => store.search(ids.filter((id) => services.has(id)), query))
   handle('getMessage', (id: string, path: string, uid: number) => service(id).getMessage(path, uid))
-  handle('setFlags', async (id: string, path: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }) => {
-    await service(id).setFlags(path, uids, flags)
+  handle('setFlags', async (id: string, path: string, uids: number[], flags: { seen?: boolean; flagged?: boolean }, expectedUidValidity?: string) => {
+    await service(id).setFlags(path, uids, flags, expectedUidValidity)
     // Reading mail changes this account's count in the switcher and the Dock badge.
     if (flags.seen !== undefined) void refreshUnread(id)
   })
