@@ -391,14 +391,15 @@ export function listThreads(account: string, mailbox: string, offset: number, li
     )
     .all(account, mailbox, limit, offset) as unknown as Row[]
   if (!rows.length) return []
-  const threads = [...new Set(rows.map((r) => r.thread))]
+  // A single binding also handles deeply loaded unified inboxes without SQLite's variable limit.
+  const threads = JSON.stringify(rows.map((r) => r.thread))
   const local = new Map(
     (d.prepare(
       `SELECT thread, sum(seen = 0) AS unseen_here, max(flagged) AS flagged_here, json_group_array(uid) AS uids_here FROM (
-         SELECT thread, seen, flagged, uid FROM messages INDEXED BY messages_by_thread WHERE account = ? AND mailbox = ? AND thread IN (${threads.map(() => '?').join(',')})
+         SELECT thread, seen, flagged, uid FROM messages INDEXED BY messages_by_thread WHERE account = ? AND mailbox = ? AND thread IN (SELECT value FROM json_each(?))
          ORDER BY date DESC, uid DESC
        ) GROUP BY thread`,
-    ).all(account, mailbox, ...threads) as Array<{ thread: string; unseen_here: number; flagged_here: number; uids_here: string }>).map((r) => [r.thread, r]),
+    ).all(account, mailbox, threads) as Array<{ thread: string; unseen_here: number; flagged_here: number; uids_here: string }>).map((r) => [r.thread, r]),
   )
   const stats = new Map(
     (
@@ -407,11 +408,11 @@ export function listThreads(account: string, mailbox: string, offset: number, li
           // Gmail keeps one message in several folders (Inbox and All Mail); count each Message-ID once.
           `SELECT thread, count(DISTINCT coalesce(message_id, mailbox || '/' || uid)) AS total, json_group_array(from_name) AS names FROM (
              SELECT thread, from_name, message_id, mailbox, uid FROM messages
-             WHERE account = ? AND thread IN (${threads.map(() => '?').join(',')}) AND mailbox NOT IN (${exclude.map(() => '?').join(',') || "''"})
+             WHERE account = ? AND thread IN (SELECT value FROM json_each(?)) AND mailbox NOT IN (${exclude.map(() => '?').join(',') || "''"})
              ORDER BY date
            ) GROUP BY thread`,
         )
-        .all(account, ...threads, ...exclude) as Array<{ thread: string; total: number; names: string }>
+        .all(account, threads, ...exclude) as Array<{ thread: string; total: number; names: string }>
     ).map((s) => [s.thread, s]),
   )
   return rows.map((row) => {

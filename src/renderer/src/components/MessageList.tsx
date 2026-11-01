@@ -1,5 +1,5 @@
 import { Flag, PanelLeft, Paperclip, Search, X } from 'lucide-react'
-import { memo, useCallback, useEffect, useRef, type Ref, type RefObject } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, type Ref, type RefObject } from 'react'
 import type { LabelDef, MessageSummary } from '../../../shared/types'
 import { displayName, shortDate } from '../lib'
 
@@ -41,7 +41,9 @@ export function MessageList(props: Props) {
   const sentinel = useRef<HTMLDivElement>(null)
   // Rows keep stable event props while always invoking the latest selection/menu logic.
   const handlers = useRef(props)
-  handlers.current = props
+  useLayoutEffect(() => {
+    handlers.current = props
+  })
   const onPick = useCallback<Props['onPick']>((key, mods) => handlers.current.onPick(key, mods), [])
   const onMenu = useCallback((key: string) => handlers.current.onRowMenu(key), [])
   const checked = new Set(props.checked)
