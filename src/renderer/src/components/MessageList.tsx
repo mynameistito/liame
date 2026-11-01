@@ -120,10 +120,11 @@ export function MessageList(props: Props) {
 
       <div className="messages" ref={listRef} tabIndex={0} role="listbox" aria-label={`${title} messages`} aria-multiselectable="true" aria-activedescendant={activeKey ? `message-${encodeURIComponent(activeKey)}` : undefined} aria-busy={loading || searching}
         onKeyDown={(e) => {
-          if (e.key === ' ' && activeKey) {
+          const key = (e.target as HTMLElement).closest<HTMLElement>('[data-message-key]')?.dataset.messageKey ?? activeKey
+          if (e.key === ' ' && key) {
             e.preventDefault()
             e.stopPropagation()
-            props.onPick(activeKey, { meta: true, shift: e.shiftKey })
+            props.onPick(key, { meta: true, shift: e.shiftKey })
           }
         }}>
         {loading && messages.length === 0 && <Skeleton />}
@@ -180,6 +181,7 @@ const Row = memo(function Row({ message: m, label, folder, selected, checked, ac
   return (
     <button
       id={`message-${encodeURIComponent(m.key)}`}
+      data-message-key={m.key}
       role="option"
       aria-selected={actionSelected}
       className={`row ${m.seen ? '' : 'unread'} ${selected ? 'selected' : ''} ${checked ? 'checked' : ''}`}

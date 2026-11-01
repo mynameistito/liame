@@ -26,8 +26,11 @@ test('message list exposes action selection, active row and filter without white
   const html = renderToStaticMarkup(<MessageList {...props} checked={[message(2).key, message(3).key]} />)
   expect(html).toContain('role="listbox"')
   expect(html).toContain('aria-activedescendant="message-a%2FMy%20Folder%2F1"')
-  expect(html).toContain('id="message-a%2FMy%20Folder%2F1" role="option" aria-selected="false"')
-  expect(html).toContain('id="message-a%2FMy%20Folder%2F2" role="option" aria-selected="true"')
+  const open = html.match(/<button\b[^>]*id="message-a%2FMy%20Folder%2F1"[^>]*>/)?.[0]
+  const checked = html.match(/<button\b[^>]*id="message-a%2FMy%20Folder%2F2"[^>]*>/)?.[0]
+  expect(open).toContain('role="option"')
+  expect(open).toContain('aria-selected="false"')
+  expect(checked).toContain('aria-selected="true"')
   expect(html).toContain('aria-pressed="true" class="filter active"')
 })
 

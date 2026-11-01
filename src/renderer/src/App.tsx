@@ -644,6 +644,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
       if (keys.length === 0 || confirmingDelete.current) return
       const gone = new Set(keys)
       const groups = byMailbox(keys)
+      let permanentCount = 0
       if (target === 'trash') {
         confirmingDelete.current = true
         try {
@@ -651,8 +652,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
           const boxes = new Map(await Promise.all([...new Set(groups.map((g) => g.account))].map(async (id) =>
             [id, boxesOf(id).length ? boxesOf(id) : await mailFor(id).listMailboxes()] as const,
           )))
-          const count = groups.reduce((total, g) => total + (boxes.get(g.account)?.find((b) => b.path === g.mailbox)?.specialUse === 'trash' ? new Set(g.uids).size : 0), 0)
-          if (count > 0 && !(await api.confirmPermanentDelete(count))) return
+          permanentCount = groups.reduce((total, g) => total + (boxes.get(g.account)?.find((b) => b.path === g.mailbox)?.specialUse === 'trash' ? new Set(g.uids).size : 0), 0)
+          if (permanentCount > 0 && !(await api.confirmPermanentDelete(permanentCount))) return
         } catch (err) {
           notify(errorMessage(err))
           return
@@ -685,12 +686,14 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         setLastMove(moved.length === groups.length ? moved : null)
         // Snoozing again from the Snoozed folder leaves the messages where they are.
         if (typeof target === 'object' && 'snooze' in target) void refreshList(current, false)
-        const permanent = target === 'trash' && groups.every((g) => boxesOf(g.account).find((b) => b.path === g.mailbox)?.specialUse === 'trash')
+        if (permanentCount > 0) {
+          const movedCount = groups.reduce((total, g) => total + new Set(g.uids).size, 0) - permanentCount
+          notify(`${permanentCount} ${permanentCount === 1 ? 'message' : 'messages'} permanently deleted${movedCount ? `; ${movedCount} moved to Trash` : ''}`)
+          return
+        }
         const where =
           typeof target === 'string' || !('path' in target) ? '' : (boxesOf(groups[0].account).find((b) => b.path === target.path)?.name ?? target.path)
-        const verb = permanent
-          ? 'deleted'
-          : typeof target === 'object' && 'snooze' in target
+        const verb = typeof target === 'object' && 'snooze' in target
             ? `snoozed until ${formatWhen(target.snooze)}`
             : target === 'archive'
             ? 'archived'
