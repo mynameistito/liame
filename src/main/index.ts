@@ -273,6 +273,18 @@ function registerIpc(): void {
     await syncServices()
     return toPublic(account)
   })
+  handle('confirmPermanentDelete', async (count: number) => {
+    if (!Number.isSafeInteger(count) || count < 1) return false
+    const { response } = await dialog.showMessageBox(window!, {
+      type: 'warning',
+      buttons: ['Delete Permanently', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      message: `Permanently delete ${count} ${count === 1 ? 'message' : 'messages'}?`,
+      detail: 'These messages are already in Trash. They will be removed from the server and cannot be restored with Undo.',
+    })
+    return response === 0
+  })
   handle('removeAccount', async (id: string) => {
     const account = accountOf(id)
     const { response } = await dialog.showMessageBox(window!, {

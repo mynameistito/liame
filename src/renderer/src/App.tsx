@@ -170,6 +170,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<MessageSummary[] | null>(null)
   const [searchRun, setSearchRun] = useState(0)
+  const [searchState, setSearchState] = useState<'local' | 'server' | 'complete' | 'failed'>('complete')
   const [filter, setFilter] = useState<Filter>('all')
   const [composer, setComposer] = useState<{ account: string; draft: Draft; title: string; context?: MessageContext; autoDraft?: boolean } | null>(null)
   const [settings, setSettings] = useState<PublicSettings | null>(null)
@@ -206,6 +207,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const detailRequest = useRef(0)
   const autoReadRequest = useRef<number | null>(null)
   const loadingMore = useRef(false)
+  const confirmingDelete = useRef(false)
   const classifying = useRef(new Set<string>())
   const mailboxesRef = useRef(mailboxes)
   mailboxesRef.current = mailboxes
@@ -464,9 +466,12 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
     const q = query.trim()
     if (!q) {
       setResults(null)
+      setSearchState('complete')
       return
     }
     const path = current
+    setSearchState('local')
+    setListError('')
     let stale = false
     let remoteTimer: number | undefined
     const timer = window.setTimeout(async () => {
@@ -475,7 +480,11 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         if (stale || currentRef.current !== path) return
         setResults(local)
         // The server can only search one folder; All Inboxes stays with the local results.
-        if (path === UNIFIED) return
+        if (path === UNIFIED) {
+          setSearchState('complete')
+          return
+        }
+        setSearchState('server')
         // Show cheap local matches early without issuing more IMAP searches while typing.
         remoteTimer = window.setTimeout(async () => {
           try {
@@ -483,12 +492,19 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
             if (stale || currentRef.current !== path) return
             const known = new Set(local.map((m) => m.key))
             setResults([...local, ...remote.filter((m) => !known.has(m.key))].sort((a, b) => Date.parse(b.date) - Date.parse(a.date)))
+            setSearchState('complete')
           } catch (err) {
-            if (!stale && currentRef.current === path) setListError(errorMessage(err))
+            if (!stale && currentRef.current === path) {
+              setSearchState('failed')
+              setListError(errorMessage(err))
+            }
           }
         }, 140)
       } catch (err) {
-        if (!stale && currentRef.current === path) setListError(errorMessage(err))
+        if (!stale && currentRef.current === path) {
+          setSearchState('failed')
+          setListError(errorMessage(err))
+        }
       }
     }, 60)
     return () => {
@@ -625,9 +641,26 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
 
   const move = useCallback(
     async (target: MoveTarget, keys: string[] = targets) => {
-      if (keys.length === 0) return
+      if (keys.length === 0 || confirmingDelete.current) return
       const gone = new Set(keys)
       const groups = byMailbox(keys)
+      let permanentCount = 0
+      if (target === 'trash') {
+        confirmingDelete.current = true
+        try {
+          // Search can include Trash even when another folder is open. Resolve missing account folders before deciding.
+          const boxes = new Map(await Promise.all([...new Set(groups.map((g) => g.account))].map(async (id) =>
+            [id, boxesOf(id).length ? boxesOf(id) : await mailFor(id).listMailboxes()] as const,
+          )))
+          permanentCount = groups.reduce((total, g) => total + (boxes.get(g.account)?.find((b) => b.path === g.mailbox)?.specialUse === 'trash' ? new Set(g.uids).size : 0), 0)
+          if (permanentCount > 0 && !(await api.confirmPermanentDelete(permanentCount))) return
+        } catch (err) {
+          notify(errorMessage(err))
+          return
+        } finally {
+          confirmingDelete.current = false
+        }
+      }
       const { afterMove } = prefsRef.current
       // The neighbour is found among what stays, next to the open message (or the first picked one).
       const anchor = visible.findIndex((m) => m.key === (selected !== null && gone.has(selected) ? selected : keys[0]))
@@ -653,12 +686,14 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         setLastMove(moved.length === groups.length ? moved : null)
         // Snoozing again from the Snoozed folder leaves the messages where they are.
         if (typeof target === 'object' && 'snooze' in target) void refreshList(current, false)
-        const permanent = target === 'trash' && groups.every((g) => boxesOf(g.account).find((b) => b.path === g.mailbox)?.specialUse === 'trash')
+        if (permanentCount > 0) {
+          const movedCount = groups.reduce((total, g) => total + new Set(g.uids).size, 0) - permanentCount
+          notify(`${permanentCount} ${permanentCount === 1 ? 'message' : 'messages'} permanently deleted${movedCount ? `; ${movedCount} moved to Trash` : ''}`)
+          return
+        }
         const where =
           typeof target === 'string' || !('path' in target) ? '' : (boxesOf(groups[0].account).find((b) => b.path === target.path)?.name ?? target.path)
-        const verb = permanent
-          ? 'deleted'
-          : typeof target === 'object' && 'snooze' in target
+        const verb = typeof target === 'object' && 'snooze' in target
             ? `snoozed until ${formatWhen(target.snooze)}`
             : target === 'archive'
             ? 'archived'
@@ -942,7 +977,8 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   const paletteItems = (): PaletteItem[] => [
     ...COMMANDS.filter((c) => !c.composer && c.id !== 'palette').map((c) => {
       const command = commands[c.id as keyof typeof commands]
-      return { id: c.id, title: c.title, group: c.group, hint: hint(c.id), disabled: command.enabled === false, run: command.run }
+      const deleting = c.id === 'trash' && rowsFor(targets).some((m) => boxesOf(m.account).find((b) => b.path === m.mailbox)?.specialUse === 'trash')
+      return { id: c.id, title: deleting ? 'Delete permanently…' : c.title, group: c.group, hint: hint(c.id), disabled: command.enabled === false, run: command.run }
     }),
     ...accounts
       .filter((a) => a.id !== account.id)
@@ -999,7 +1035,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
           ]),
       { separator: true },
       { id: 'archive', label: 'Archive', accelerator: acc('archive') },
-      { id: 'trash', label: box?.specialUse === 'trash' ? 'Delete Permanently' : 'Move to Trash', accelerator: acc('trash') },
+      { id: 'trash', label: list.some((m) => boxesOf(m.account).find((b) => b.path === m.mailbox)?.specialUse === 'trash') ? 'Delete Permanently…' : 'Move to Trash', accelerator: acc('trash') },
       { id: 'junk', label: 'Mark as Junk', accelerator: acc('junk'), enabled: box?.specialUse !== 'junk' },
       { id: 'snooze', label: 'Snooze…', accelerator: acc('snooze') },
       { label: 'Move To', enabled: foldersFor(keys).length > 0, submenu: foldersFor(keys).map((b) => ({ id: `move:${b.path}`, label: b.path.toUpperCase() === 'INBOX' ? 'Inbox' : b.path })) },
@@ -1156,6 +1192,9 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         loading={loading}
         error={listError}
         query={query}
+        searchState={searchState}
+        searchScope={current === UNIFIED ? 'All accounts · cached mail only' : `All cached folders · server: ${box?.name || current}`}
+        localSearchOnly={current === UNIFIED}
         filter={filter}
         hasMore={!results && hasMore}
         showRecipient={box?.specialUse === 'sent' || box?.specialUse === 'drafts'}
@@ -1177,7 +1216,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         loading={detailLoading}
         error={detailError}
         mailbox={current}
-        inTrash={box?.specialUse === 'trash'}
+        inTrash={rowsFor(targets).some((m) => boxesOf(m.account).find((b) => b.path === m.mailbox)?.specialUse === 'trash')}
         labels={labelList}
         assistantOpen={assistantOpen}
         onAssistant={() => setAssistantOpen((open) => !open)}

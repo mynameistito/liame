@@ -281,6 +281,7 @@ export interface LiameApi {
   testAccount(account: AccountInput): Promise<{ ok: true } | { ok: false; error: string }>
   /** Asks for confirmation natively; resolves false when the user keeps the account. */
   removeAccount(accountId: string): Promise<boolean>
+  confirmPermanentDelete(count: number): Promise<boolean>
   /** A notification click that arrived while no window was open. */
   takePendingOpen(): Promise<MailEvent | null>
   listMailboxes(accountId: string): Promise<Mailbox[]>

@@ -14,6 +14,9 @@ interface Props {
   loading: boolean
   error: string
   query: string
+  searchState: 'local' | 'server' | 'complete' | 'failed'
+  searchScope: string
+  localSearchOnly: boolean
   filter: Filter
   hasMore: boolean
   showRecipient: boolean
@@ -47,6 +50,8 @@ export function MessageList(props: Props) {
   const onPick = useCallback<Props['onPick']>((key, mods) => handlers.current.onPick(key, mods), [])
   const onMenu = useCallback((key: string) => handlers.current.onRowMenu(key), [])
   const checked = new Set(props.checked)
+  const searching = !!query.trim() && (props.searchState === 'local' || props.searchState === 'server')
+  const activeKey = messages.some((m) => m.key === selected) ? selected : messages[0]?.key
 
   // Fetch the next page when the end of the list scrolls into view.
   useEffect(() => {
@@ -82,6 +87,8 @@ export function MessageList(props: Props) {
             ref={props.searchRef}
             value={query}
             placeholder="Search"
+            aria-label="Search mail"
+            aria-describedby="search-scope"
             onChange={(e) => props.onQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Escape') {
@@ -91,14 +98,18 @@ export function MessageList(props: Props) {
             }}
           />
           {query && (
-            <button className="icon-button" style={{ width: 20, height: 20 }} onClick={() => props.onQuery('')}>
+            <button className="icon-button" aria-label="Clear search" style={{ width: 20, height: 20 }} onClick={() => props.onQuery('')}>
               <X size={12} />
             </button>
           )}
         </label>
+        <div id="search-scope" className="search-status">
+          {props.searchScope}
+          {query.trim() && <div role="status">{props.searchState === 'local' ? 'Searching cached mail…' : props.searchState === 'server' ? 'Searching server…' : props.searchState === 'failed' ? 'Search incomplete' : props.localSearchOnly ? 'Cached results only' : 'Search complete'}</div>}
+        </div>
         <div className="filters">
           {(['all', 'unread', 'flagged'] as const).map((f) => (
-            <button key={f} className={`filter ${filter === f ? 'active' : ''}`} onClick={() => props.onFilter(f)}>
+            <button key={f} aria-pressed={filter === f} className={`filter ${filter === f ? 'active' : ''}`} onClick={() => props.onFilter(f)}>
               {f[0].toUpperCase() + f.slice(1)}
             </button>
           ))}
@@ -107,10 +118,18 @@ export function MessageList(props: Props) {
 
       {error && <div className="error-banner">{error}</div>}
 
-      <div className="messages" ref={listRef} tabIndex={0}>
+      <div className="messages" ref={listRef} tabIndex={0} role="listbox" aria-label={`${title} messages`} aria-multiselectable="true" aria-activedescendant={activeKey ? `message-${encodeURIComponent(activeKey)}` : undefined} aria-busy={loading || searching}
+        onKeyDown={(e) => {
+          const key = (e.target as HTMLElement).closest<HTMLElement>('[data-message-key]')?.dataset.messageKey ?? activeKey
+          if (e.key === ' ' && key) {
+            e.preventDefault()
+            e.stopPropagation()
+            props.onPick(key, { meta: true, shift: e.shiftKey })
+          }
+        }}>
         {loading && messages.length === 0 && <Skeleton />}
         {!loading && messages.length === 0 && !error && (
-          <div className="list-empty">{query ? 'No results' : filter === 'all' ? 'Nothing here' : `No ${filter} messages`}</div>
+          <div className="list-empty">{query.trim() ? searching ? 'Searching…' : props.localSearchOnly ? 'No cached matches' : 'No matches in searched mail' : filter === 'all' ? 'Nothing here' : `No ${filter} messages`}</div>
         )}
         {messages.map((m) => (
           <Row
@@ -126,6 +145,7 @@ export function MessageList(props: Props) {
             }
             selected={m.key === selected}
             checked={checked.has(m.key)}
+            actionSelected={checked.size > 1 ? checked.has(m.key) : m.key === selected}
             showRecipient={showRecipient}
             onPick={onPick}
             onMenu={onMenu}
@@ -142,6 +162,7 @@ interface RowProps {
   label?: LabelDef
   selected: boolean
   checked: boolean
+  actionSelected: boolean
   showRecipient: boolean
   onPick: Props['onPick']
   onMenu: (key: string) => void
@@ -149,7 +170,7 @@ interface RowProps {
   folder?: string
 }
 
-const Row = memo(function Row({ message: m, label, folder, selected, checked, showRecipient, onPick, onMenu }: RowProps) {
+const Row = memo(function Row({ message: m, label, folder, selected, checked, actionSelected, showRecipient, onPick, onMenu }: RowProps) {
   const conversation = (m.threadCount ?? 1) > 1
   // A conversation row names everyone in it; a single message names its sender (or recipients in Sent).
   const who = showRecipient
@@ -159,7 +180,15 @@ const Row = memo(function Row({ message: m, label, folder, selected, checked, sh
       : displayName(m.from)
   return (
     <button
+      id={`message-${encodeURIComponent(m.key)}`}
+      data-message-key={m.key}
+      role="option"
+      aria-selected={actionSelected}
       className={`row ${m.seen ? '' : 'unread'} ${selected ? 'selected' : ''} ${checked ? 'checked' : ''}`}
+      onClick={(e) => {
+        // Pointer selection already ran on mouse-down; keyboard and assistive activation emit a zero-detail click.
+        if (e.detail === 0) onPick(m.key, { meta: e.metaKey, shift: e.shiftKey })
+      }}
       onMouseDown={(e) => {
         if (e.button !== 0) return
         // Shift-click would otherwise select text across rows.

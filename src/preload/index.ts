@@ -11,6 +11,7 @@ const api: LiameApi = {
   saveAccount: call('saveAccount'),
   testAccount: call('testAccount'),
   removeAccount: call('removeAccount'),
+  confirmPermanentDelete: call('confirmPermanentDelete'),
   takePendingOpen: call('takePendingOpen'),
   listMailboxes: call('listMailboxes'),
   listMessages: call('listMessages'),
