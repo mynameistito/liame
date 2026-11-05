@@ -91,7 +91,7 @@ export function Palette({ items, initialQuery = '', onClose }: Props) {
             }}
           />
         </label>
-        <div className="palette-list" ref={list}>
+        <div className="palette-list fade-end" ref={list}>
           {results.length === 0 && <div className="palette-empty">No matching commands</div>}
           {results.map((item, i) => (
             <div key={item.id}>

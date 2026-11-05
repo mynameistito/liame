@@ -1659,10 +1659,13 @@ kbd {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 6px 6px 28px;
-  /* Keyboard navigation scrolls the active row clear of the fade. */
+  padding: 6px;
+}
+/* The command palette's list scrolls: its cut-off row fades out to show the list continues, the fade sits in the
+   padding once scrolled to the end, and keyboard navigation scrolls the active row clear of it. */
+.palette-list.fade-end {
+  padding-bottom: 28px;
   scroll-padding-bottom: 28px;
-  /* The cut-off row fades out to show the list continues; the fade sits in the padding once scrolled to the end. */
   mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
 }
 .palette-group {

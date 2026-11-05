@@ -147,7 +147,7 @@ export function Settings({ settings, initialTab = 'general', onClose, onSaved }:
               <Row label="Accent">
                 <div className="accents">
                   {ACCENTS.map(([color, name]) => (
-                    <button key={color} title={name} aria-pressed={prefs.accent === color} className={`accent ${prefs.accent === color ? 'on' : ''}`} style={{ background: color }} onClick={() => setPref('accent', color)} />
+                    <button key={color} title={name} aria-label={name} aria-pressed={prefs.accent === color} className={`accent ${prefs.accent === color ? 'on' : ''}`} style={{ background: color }} onClick={() => setPref('accent', color)} />
                   ))}
                 </div>
               </Row>
