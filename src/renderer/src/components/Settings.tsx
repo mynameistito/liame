@@ -283,6 +283,7 @@ export function Settings({ settings, initialTab = 'general', onClose, onSaved }:
             Cancel
           </button>
           <button className="primary" onClick={save} aria-busy={saving} disabled={saving}>
+            {saving && <LoaderCircle size={13} className="spin" />}
             {saving ? 'Saving' : 'Save'}
           </button>
         </div>
