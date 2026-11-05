@@ -1,5 +1,5 @@
 import { LoaderCircle, Plus, RotateCcw, Trash2, X } from 'lucide-react'
-import { useEffect, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useId, useState, type ReactNode } from 'react'
 import type { AiProvider, LabelDef, LabelEngine, Prefs, PublicSettings, SettingsPatch, ShortcutOverrides, Snippet } from '../../../shared/types'
 import { COMMANDS, type CommandId, comboOf, formatCombo, keysFor } from '../commands'
 import { api, errorMessage } from '../lib'
@@ -291,21 +291,29 @@ export function Settings({ settings, initialTab = 'general', onClose, onSaved }:
   )
 }
 
+/** Ids of the enclosing row's label and hint, so its control is announced by the setting's name. */
+const RowLabel = createContext<{ label?: string; hint?: string }>({})
+
 function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  const id = useId()
+  const ids = { label: `${id}-label`, hint: hint ? `${id}-hint` : undefined }
   return (
     <div className="pref-row">
       <div className="pref-label">
-        {label}
-        {hint && <small>{hint}</small>}
+        <span id={ids.label}>{label}</span>
+        {hint && <small id={ids.hint}>{hint}</small>}
       </div>
-      <div className="pref-control">{children}</div>
+      <div className="pref-control" role="group" aria-labelledby={ids.label} aria-describedby={ids.hint}>
+        <RowLabel.Provider value={ids}>{children}</RowLabel.Provider>
+      </div>
     </div>
   )
 }
 
 function Toggle({ on, onChange, labels }: { on: boolean; onChange: (on: boolean) => void; labels?: [string, string] }) {
+  const row = useContext(RowLabel)
   return (
-    <button className={`toggle ${on ? 'on' : ''}`} role="switch" aria-checked={on} onClick={() => onChange(!on)}>
+    <button className={`toggle ${on ? 'on' : ''}`} role="switch" aria-checked={on} aria-labelledby={row.label} aria-describedby={row.hint} onClick={() => onChange(!on)}>
       <span className="knob" />
       {labels && <span className="toggle-label">{on ? labels[1] : labels[0]}</span>}
     </button>
