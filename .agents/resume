@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Runs every time an orb wakes. Liame has no services or credentials to reconnect, so this only checks that setup's
+# dependencies are still in place and says how to repair them.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+if [ ! -d node_modules ] || [ ! -x node_modules/electron/dist/electron ]; then
+  echo "Dependencies are missing; run .agents/setup." >&2
+  exit 1
+fi
