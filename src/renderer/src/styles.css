@@ -13,6 +13,10 @@
   --text-2: #c2c2c7;
   --text-3: #8e8e93;
   --text-4: #636366;
+  /* Previews of read rows: quieter than subjects, still 4.5:1 on black and on hovered or selected rows. */
+  --preview: #77777c;
+  --preview-raised: #8a8a8f;
+  --danger-text: #ff9a9a;
 
   --accent: #3b8cff;
   --accent-soft: rgba(59, 140, 255, 0.14);
@@ -154,6 +158,9 @@ select {
 .icon-button.on {
   color: var(--accent);
 }
+.icon-button.on.flagged {
+  color: var(--flag);
+}
 
 .compose-button {
   margin: 4px 12px 14px;
@@ -185,6 +192,9 @@ kbd {
   flex: 1;
   overflow-y: auto;
   padding: 0 8px 12px;
+  /* Fades only the bottom padding, so a section cut off by a short window recedes instead of peeking out,
+     and the last item is never dimmed once scrolled into view. */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 12px), transparent);
 }
 
 .nav-label {
@@ -312,6 +322,7 @@ kbd {
   border-radius: 6px;
   font-size: 12px;
   color: var(--text-3);
+  white-space: nowrap;
 }
 .add-account:hover {
   color: var(--text);
@@ -409,6 +420,16 @@ kbd {
   line-height: 1.5;
   color: var(--text-2);
   overflow-wrap: anywhere;
+}
+.search-status [role='status'] {
+  display: inline;
+}
+.search-status [role='status'].failed {
+  color: var(--danger-text);
+}
+.search-status [role='status']::before {
+  content: ' · ' / '';
+  color: var(--text-3);
 }
 
 .filters {
@@ -519,7 +540,7 @@ kbd {
   margin-top: 3px;
   font-size: 12.5px;
   line-height: 1.45;
-  color: var(--text-4);
+  color: var(--preview);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -535,6 +556,11 @@ kbd {
   color: #e8e8ec;
   font-weight: 500;
 }
+.row:hover .row-preview,
+.row.selected .row-preview,
+.row.checked .row-preview {
+  color: var(--preview-raised);
+}
 .row.unread .row-preview {
   color: #a1a1a6;
 }
@@ -544,6 +570,17 @@ kbd {
   padding: 48px 24px;
   text-align: center;
   color: var(--text-3);
+}
+/* An empty list centers its message, and the reader beside it stays blank instead of repeating the emptiness. */
+.app:has(.list-empty) .reader-placeholder {
+  visibility: hidden;
+}
+.messages:has(> .list-empty:only-child) {
+  display: grid;
+  place-items: center;
+}
+.messages > .list-empty:only-child {
+  padding-bottom: 96px;
 }
 
 .skeleton {
@@ -594,6 +631,7 @@ kbd {
 }
 
 .subject {
+  text-wrap: balance;
   font-size: 22px;
   line-height: 1.25;
   font-weight: 600;
@@ -727,7 +765,7 @@ kbd {
   color: var(--text-4);
   text-align: center;
 }
-.empty-reader svg {
+.empty-reader > div > svg {
   margin-bottom: 10px;
 }
 
@@ -869,8 +907,15 @@ kbd {
   filter: brightness(1.08);
 }
 .primary:disabled {
-  opacity: 0.5;
+  background: var(--selected);
+  color: var(--text-4);
   filter: none;
+}
+/* Busy (sending, connecting, saving) keeps the action's color; only unavailable actions go gray. */
+.primary:disabled[aria-busy='true'] {
+  background: var(--accent);
+  color: var(--on-accent);
+  opacity: 0.6;
 }
 .primary kbd {
   color: inherit;
@@ -954,6 +999,8 @@ kbd {
   color: var(--text-3);
   font-size: 12px;
   cursor: default;
+}
+.setup-advanced[open] summary {
   margin-bottom: 12px;
 }
 .setup .primary {
@@ -1053,8 +1100,12 @@ kbd {
   color: var(--text-3);
   text-align: right;
 }
-.label-select:hover {
+.label-select:hover,
+.label-select:focus-visible {
   border-color: var(--text-4);
+}
+.label-select.empty {
+  border-style: dashed;
 }
 
 /* AI entry points */
@@ -1470,12 +1521,42 @@ kbd {
 
 /* Narrow reader (assistant open, small windows): keep the header on one line per item and let buttons wrap whole. */
 .sender-name {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
   white-space: nowrap;
+}
+.sender-name > :first-child {
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sender-address {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .reply-bar {
   flex-wrap: wrap;
+}
+/* When the reply buttons would wrap (assistant open, small windows), an even two-column grid replaces the orphaned button.
+   Measured on the article's content box; the one-row bar needs about 410px. */
+.reader-inner {
+  container-type: inline-size;
+}
+@container (max-width: 420px) {
+  .reply-bar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .reply-bar button {
+    justify-content: center;
+  }
+  /* An odd last action (Drafts adds Edit draft) spans both columns instead of sitting alone in one. */
+  .reply-bar button:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
 }
 .reply-bar button {
   white-space: nowrap;
@@ -1583,6 +1664,13 @@ kbd {
   min-height: 0;
   overflow-y: auto;
   padding: 6px;
+}
+/* The command palette's list scrolls: its cut-off row fades out to show the list continues, the fade sits in the
+   padding once scrolled to the end, and keyboard navigation scrolls the active row clear of it. */
+.palette-list.fade-end {
+  padding-bottom: 28px;
+  scroll-padding-bottom: 28px;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
 }
 .palette-group {
   padding: 10px 10px 4px;
@@ -1719,7 +1807,10 @@ kbd {
   transform: translateX(13px);
 }
 .toggle .toggle-label {
+  order: -1;
+  /* Fixed width, so switching between state words does not reflow the setting's description. */
   min-width: 96px;
+  text-align: right;
 }
 
 .accents {
@@ -2039,6 +2130,11 @@ body.resizing * {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--raised);
+}
+.body-text + .thread-card,
+.body-frame + .thread-card,
+.attachments + .thread-card {
+  margin-top: 28px;
 }
 .thread-card.open {
   background: transparent;

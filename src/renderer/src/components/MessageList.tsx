@@ -105,7 +105,7 @@ export function MessageList(props: Props) {
         </label>
         <div id="search-scope" className="search-status">
           {props.searchScope}
-          {query.trim() && <div role="status">{props.searchState === 'local' ? 'Searching cached mail…' : props.searchState === 'server' ? 'Searching server…' : props.searchState === 'failed' ? 'Search incomplete' : props.localSearchOnly ? 'Cached results only' : 'Search complete'}</div>}
+          {query.trim() && <div role="status" className={props.searchState === 'failed' ? 'failed' : undefined}>{props.searchState === 'local' ? 'Searching cached mail…' : props.searchState === 'server' ? 'Searching server…' : props.searchState === 'failed' ? 'Search incomplete' : props.localSearchOnly ? 'Cached results only' : 'Search complete'}</div>}
         </div>
         <div className="filters">
           {(['all', 'unread', 'flagged'] as const).map((f) => (

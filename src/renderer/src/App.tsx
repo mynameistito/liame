@@ -48,6 +48,9 @@ const UNIFIED = '\u0000all-inboxes'
 /** Snoozes, queued sends, and reminders of every account; not a real mailbox path either. */
 const SCHEDULED = '\u0000scheduled'
 
+/** Narrowest the reader gets before the list gives way to it. */
+const READER_MIN = 420
+
 const EMPTY_DRAFT: Draft = { to: '', cc: '', bcc: '', subject: '', text: '', attachments: [] }
 
 const DEFAULT_PREFS: Prefs = {
@@ -931,7 +934,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
         focusSearch.current = true
         if (layout.listHidden) toggleList()
         // Close the assistant when the list would still not fit next to it, even at minimum widths.
-        if (assistantOpen && windowWidth < (layout.sidebarHidden ? 0 : 180) + 280 + 280 + 360) setAssistantOpen(false)
+        if (assistantOpen && windowWidth < (layout.sidebarHidden ? 0 : 180) + 280 + 280 + READER_MIN) setAssistantOpen(false)
       },
     },
     filterAll: { run: () => setFilter('all') },
@@ -1082,7 +1085,7 @@ function Mail({ account, accounts, openRequest, onOpenHandled, onSwitch, onAdd, 
   // Shrink panes (assistant, then list, then sidebar) so the reader keeps its minimum in narrow windows.
   const fitted = useMemo(() => {
     let over =
-      (layout.sidebarHidden ? 0 : layout.sidebar) + (layout.listHidden ? 0 : layout.list) + (assistantOpen ? layout.assistant : 0) + 360 - windowWidth
+      (layout.sidebarHidden ? 0 : layout.sidebar) + (layout.listHidden ? 0 : layout.list) + (assistantOpen ? layout.assistant : 0) + READER_MIN - windowWidth
     const shrink = (width: number, min: number, shown: boolean) => {
       if (!shown || over <= 0) return width
       const cut = Math.min(over, Math.max(0, width - min))

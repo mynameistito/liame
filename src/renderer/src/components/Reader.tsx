@@ -3,6 +3,7 @@ import {
   BellRing,
   Clock,
   Flag,
+  FolderInput,
   Forward,
   LoaderCircle,
   Mail,
@@ -15,6 +16,7 @@ import {
   ReplyAll,
   Sparkles,
   Sun,
+  Tag,
   Trash2,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -101,11 +103,11 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
                 <Flag size={14} /> {bulk.allFlagged ? 'Unflag' : 'Flag'} <kbd>{hint('toggleFlag')}</kbd>
               </button>
               <button onClick={bulk.onMove}>
-                Move to… <kbd>{hint('moveTo')}</kbd>
+                <FolderInput size={14} /> Move to… <kbd>{hint('moveTo')}</kbd>
               </button>
               {labels.length > 0 && (
                 <button onClick={bulk.onLabel}>
-                  Label… <kbd>{hint('labelAs')}</kbd>
+                  <Tag size={14} /> Label… <kbd>{hint('labelAs')}</kbd>
                 </button>
               )}
             </div>
@@ -123,7 +125,7 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
       <main className="pane reader">
         <div className="toolbar drag">{showList}</div>
         <div className="empty-reader">
-          <div>
+          <div className="reader-placeholder">
             <Mail size={28} strokeWidth={1.2} />
             <div>No message selected</div>
           </div>
@@ -162,7 +164,7 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
           icon={summary.seen ? <Mail size={16} /> : <MailOpen size={16} />}
         />
         {/* Read and flag state come from the row, which for a conversation covers all of its messages. */}
-        <ToolButton title={`${summary.flagged ? 'Unflag' : 'Flag'}  ${hint('toggleFlag')}`} onClick={actions.onToggleFlag} on={summary.flagged} icon={<Flag size={16} fill={summary.flagged ? 'currentColor' : 'none'} />} />
+        <ToolButton title={`${summary.flagged ? 'Unflag' : 'Flag'}  ${hint('toggleFlag')}`} onClick={actions.onToggleFlag} on={summary.flagged} className="flagged" icon={<Flag size={16} fill={summary.flagged ? 'currentColor' : 'none'} />} />
         <span className="spacer" />
         <ToolButton title={`Assistant  ${hint('assistant')}`} onClick={actions.onAssistant} on={assistantOpen} icon={<Sparkles size={15} />} />
         {detail?.html && (
@@ -184,7 +186,7 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
             </div>
             <div className="sender-main">
               <div className="sender-name">
-                {displayName(message.from)}
+                <span>{displayName(message.from)}</span>
                 {message.from.name && <span className="sender-address">{message.from.address}</span>}
               </div>
               <div className="sender-to" title={recipients.map((r) => r.address).join(', ')}>
@@ -195,7 +197,7 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
               <div className="sender-date">{longDate(message.date)}</div>
               {labels.length > 0 && (
                 <select
-                  className="label-select"
+                  className={`label-select ${summary.label ? '' : 'empty'}`}
                   // Labels live on the list summary; the fetched detail never carries one.
                   value={summary.label ?? ''}
                   style={{ color: labels.find((l) => l.id === summary.label)?.color }}
@@ -309,9 +311,9 @@ function ThreadCard(props: { message: MessageSummary; body?: MessageDetail | 'lo
   )
 }
 
-function ToolButton({ title, icon, onClick, on }: { title: string; icon: ReactNode; onClick: () => void; on?: boolean }) {
+function ToolButton({ title, icon, onClick, on, className = '' }: { title: string; icon: ReactNode; onClick: () => void; on?: boolean; className?: string }) {
   return (
-    <button className={`icon-button ${on ? 'on' : ''}`} title={title} onClick={onClick}>
+    <button className={`icon-button ${on ? 'on' : ''} ${className}`} title={title} onClick={onClick}>
       {icon}
     </button>
   )
