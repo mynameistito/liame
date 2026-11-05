@@ -16,6 +16,7 @@
   /* Previews of read rows: quieter than subjects, still 4.5:1 on black and on hovered or selected rows. */
   --preview: #77777c;
   --preview-raised: #88888d;
+  --danger-text: #ff9a9a;
 
   --accent: #3b8cff;
   --accent-soft: rgba(59, 140, 255, 0.14);
@@ -191,6 +192,9 @@ kbd {
   flex: 1;
   overflow-y: auto;
   padding: 0 8px 12px;
+  /* Fades only the bottom padding, so a section cut off by a short window recedes instead of peeking out,
+     and the last item is never dimmed once scrolled into view. */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 12px), transparent);
 }
 
 .nav-label {
@@ -421,7 +425,7 @@ kbd {
   display: inline;
 }
 .search-status [role='status'].failed {
-  color: #ff9a9a;
+  color: var(--danger-text);
 }
 .search-status [role='status']::before {
   content: ' · ' / '';
@@ -553,7 +557,8 @@ kbd {
   font-weight: 500;
 }
 .row:hover .row-preview,
-.row.selected .row-preview {
+.row.selected .row-preview,
+.row.checked .row-preview {
   color: var(--preview-raised);
 }
 .row.unread .row-preview {
@@ -565,6 +570,17 @@ kbd {
   padding: 48px 24px;
   text-align: center;
   color: var(--text-3);
+}
+/* An empty list centers its message, and the reader beside it stays blank instead of repeating the emptiness. */
+.app:has(.list-empty) .empty-reader > div {
+  visibility: hidden;
+}
+.messages:has(> .list-empty:only-child) {
+  display: grid;
+  place-items: center;
+}
+.messages > .list-empty:only-child {
+  padding-bottom: 96px;
 }
 
 .skeleton {
@@ -1524,11 +1540,12 @@ kbd {
 .reply-bar {
   flex-wrap: wrap;
 }
-/* A narrow reader (assistant open, small windows) gets an even two-column grid instead of one orphaned button. */
-.reader-scroll {
+/* When the reply buttons would wrap (assistant open, small windows), an even two-column grid replaces the orphaned button.
+   Measured on the article's content box; the one-row bar needs about 410px. */
+.reader-inner {
   container-type: inline-size;
 }
-@container (max-width: 600px) {
+@container (max-width: 420px) {
   .reply-bar {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1642,7 +1659,9 @@ kbd {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 6px;
+  padding: 6px 6px 28px;
+  /* The cut-off row fades out to show the list continues; the fade sits in the padding once scrolled to the end. */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
 }
 .palette-group {
   padding: 10px 10px 4px;

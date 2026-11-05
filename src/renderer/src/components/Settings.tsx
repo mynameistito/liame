@@ -1,5 +1,5 @@
 import { LoaderCircle, Plus, RotateCcw, Trash2, X } from 'lucide-react'
-import { createContext, useContext, useEffect, useId, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useId, useState, type ComponentProps, type ReactNode } from 'react'
 import type { AiProvider, LabelDef, LabelEngine, Prefs, PublicSettings, SettingsPatch, ShortcutOverrides, Snippet } from '../../../shared/types'
 import { COMMANDS, type CommandId, comboOf, formatCombo, keysFor } from '../commands'
 import { api, errorMessage } from '../lib'
@@ -113,18 +113,18 @@ export function Settings({ settings, initialTab = 'general', onClose, onSaved }:
           {tab === 'general' && (
             <section>
               <Row label="Mark as read">
-                <select value={prefs.markRead} onChange={(e) => setPref('markRead', e.target.value as Prefs['markRead'])}>
+                <Select value={prefs.markRead} onChange={(e) => setPref('markRead', e.target.value as Prefs['markRead'])}>
                   <option value="immediately">When opened</option>
                   <option value="delay">After 2 seconds open</option>
                   <option value="never">Only with U</option>
-                </select>
+                </Select>
               </Row>
               <Row label="After archive or delete">
-                <select value={prefs.afterMove} onChange={(e) => setPref('afterMove', e.target.value as Prefs['afterMove'])}>
+                <Select value={prefs.afterMove} onChange={(e) => setPref('afterMove', e.target.value as Prefs['afterMove'])}>
                   <option value="next">Open the next (older) message</option>
                   <option value="previous">Open the previous (newer) message</option>
                   <option value="none">Return to the list</option>
-                </select>
+                </Select>
               </Row>
               <Row label="Conversations" hint="Group replies into one row per conversation, and show the whole conversation when you open it.">
                 <Toggle on={prefs.conversations} onChange={(v) => setPref('conversations', v)} />
@@ -147,14 +147,14 @@ export function Settings({ settings, initialTab = 'general', onClose, onSaved }:
               <Row label="Accent">
                 <div className="accents">
                   {ACCENTS.map(([color, name]) => (
-                    <button key={color} title={name} className={`accent ${prefs.accent === color ? 'on' : ''}`} style={{ background: color }} onClick={() => setPref('accent', color)} />
+                    <button key={color} title={name} aria-pressed={prefs.accent === color} className={`accent ${prefs.accent === color ? 'on' : ''}`} style={{ background: color }} onClick={() => setPref('accent', color)} />
                   ))}
                 </div>
               </Row>
               <Row label="Message list">
                 <div className="segmented">
                   {(['comfortable', 'compact', 'minimal'] as const).map((d) => (
-                    <button key={d} className={prefs.density === d ? 'on' : ''} onClick={() => setPref('density', d)}>
+                    <button key={d} aria-pressed={prefs.density === d} className={prefs.density === d ? 'on' : ''} onClick={() => setPref('density', d)}>
                       {d === 'comfortable' ? 'Two-line preview' : d === 'compact' ? 'One-line preview' : 'No preview'}
                     </button>
                   ))}
@@ -163,7 +163,7 @@ export function Settings({ settings, initialTab = 'general', onClose, onSaved }:
               <Row label="Text size">
                 <div className="segmented">
                   {[0.9, 1, 1.1, 1.2].map((z) => (
-                    <button key={z} className={prefs.zoom === z ? 'on' : ''} onClick={() => setPref('zoom', z)}>
+                    <button key={z} aria-pressed={prefs.zoom === z} className={prefs.zoom === z ? 'on' : ''} onClick={() => setPref('zoom', z)}>
                       {Math.round(z * 100)}%
                     </button>
                   ))}
@@ -178,10 +178,10 @@ export function Settings({ settings, initialTab = 'general', onClose, onSaved }:
           {tab === 'ai' && (
             <section>
               <div className="segmented" style={{ marginBottom: 14 }}>
-                <button className={provider === 'chatgpt' ? 'on' : ''} onClick={() => setProvider('chatgpt')}>
+                <button aria-pressed={provider === 'chatgpt'} className={provider === 'chatgpt' ? 'on' : ''} onClick={() => setProvider('chatgpt')}>
                   ChatGPT subscription
                 </button>
-                <button className={provider === 'openai' ? 'on' : ''} onClick={() => setProvider('openai')}>
+                <button aria-pressed={provider === 'openai'} className={provider === 'openai' ? 'on' : ''} onClick={() => setProvider('openai')}>
                   OpenAI API key
                 </button>
               </div>
@@ -308,6 +308,12 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
       </div>
     </div>
   )
+}
+
+/** A native select named by its row's label, like Toggle. */
+function Select(props: ComponentProps<'select'>) {
+  const row = useContext(RowLabel)
+  return <select aria-labelledby={row.label} aria-describedby={row.hint} {...props} />
 }
 
 function Toggle({ on, onChange, labels }: { on: boolean; onChange: (on: boolean) => void; labels?: [string, string] }) {
