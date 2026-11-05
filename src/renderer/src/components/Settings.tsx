@@ -282,7 +282,7 @@ export function Settings({ settings, initialTab = 'general', onClose, onSaved }:
           <button className="ghost" onClick={onClose}>
             Cancel
           </button>
-          <button className="primary" onClick={save} disabled={saving}>
+          <button className="primary" onClick={save} aria-busy={saving} disabled={saving}>
             {saving ? 'Saving' : 'Save'}
           </button>
         </div>

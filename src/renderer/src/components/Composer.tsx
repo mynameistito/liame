@@ -369,7 +369,7 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
             <button className="ghost danger" onClick={onClose}>
               Discard
             </button>
-            <button className="primary small" autoFocus onClick={saveAndClose} disabled={savingDraft}>
+            <button className="primary small" autoFocus onClick={saveAndClose} aria-busy={savingDraft} disabled={savingDraft}>
               {savingDraft ? 'Saving' : 'Save draft'}
             </button>
           </div>
@@ -403,7 +403,7 @@ export function Composer({ initial, title, context, autoDraft, snippets, shortcu
           <button className="ghost" onClick={() => setPickingTime(true)} disabled={sending || writing || !draft.to.trim()}>
             Send later
           </button>
-          <button className="primary" onClick={() => send()} disabled={sending || writing || !draft.to.trim()}>
+          <button className="primary" onClick={() => send()} aria-busy={sending} disabled={sending || writing || !draft.to.trim()}>
             {sending && <LoaderCircle size={13} className="spin" />}
             {sending ? 'Sending' : 'Send'}
             {!sending && keysFor('send', shortcuts)[0] && <kbd>{formatCombo(keysFor('send', shortcuts)[0])}</kbd>}

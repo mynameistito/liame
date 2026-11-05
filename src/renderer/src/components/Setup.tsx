@@ -184,7 +184,7 @@ export function Setup({ onDone, onCancel }: Props) {
           </div>
         </details>
 
-        <button className="primary" type="submit" disabled={busy || !email || !password || !imapHost || !smtpHost}>
+        <button className="primary" type="submit" aria-busy={busy} disabled={busy || !email || !password || !imapHost || !smtpHost}>
           {busy && <LoaderCircle size={14} className="spin" />}
           {busy ? 'Connecting' : 'Connect'}
         </button>

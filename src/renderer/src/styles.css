@@ -13,6 +13,9 @@
   --text-2: #c2c2c7;
   --text-3: #8e8e93;
   --text-4: #636366;
+  /* Previews of read rows: quieter than subjects, still 4.5:1 on black and on hovered or selected rows. */
+  --preview: #77777c;
+  --preview-raised: #88888d;
 
   --accent: #3b8cff;
   --accent-soft: rgba(59, 140, 255, 0.14);
@@ -419,7 +422,7 @@ kbd {
   color: var(--text-2);
 }
 .search-status [role='status']::before {
-  content: ' · ';
+  content: ' · ' / '';
   color: var(--text-3);
 }
 
@@ -531,7 +534,7 @@ kbd {
   margin-top: 3px;
   font-size: 12.5px;
   line-height: 1.45;
-  color: #77777c;
+  color: var(--preview);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -549,7 +552,7 @@ kbd {
 }
 .row:hover .row-preview,
 .row.selected .row-preview {
-  color: #88888d;
+  color: var(--preview-raised);
 }
 .row.unread .row-preview {
   color: #a1a1a6;
@@ -610,6 +613,7 @@ kbd {
 }
 
 .subject {
+  text-wrap: balance;
   font-size: 22px;
   line-height: 1.25;
   font-weight: 600;
@@ -888,6 +892,12 @@ kbd {
   background: var(--selected);
   color: var(--text-4);
   filter: none;
+}
+/* Busy (sending, connecting, saving) keeps the action's color; only unavailable actions go gray. */
+.primary:disabled[aria-busy='true'] {
+  background: var(--accent);
+  color: var(--on-accent);
+  opacity: 0.6;
 }
 .primary kbd {
   color: inherit;
@@ -1512,6 +1522,19 @@ kbd {
 .reply-bar {
   flex-wrap: wrap;
 }
+/* A narrow reader (assistant open, small windows) gets an even two-column grid instead of one orphaned button. */
+.reader-scroll {
+  container-type: inline-size;
+}
+@container (max-width: 600px) {
+  .reply-bar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .reply-bar button {
+    justify-content: center;
+  }
+}
 .reply-bar button {
   white-space: nowrap;
 }
@@ -1755,6 +1778,9 @@ kbd {
 }
 .toggle .toggle-label {
   order: -1;
+  /* Fixed width, so switching between state words does not reflow the setting's description. */
+  min-width: 96px;
+  text-align: right;
 }
 
 .accents {
@@ -2074,6 +2100,11 @@ body.resizing * {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--raised);
+}
+.body-text + .thread-card,
+.body-frame + .thread-card,
+.attachments + .thread-card {
+  margin-top: 28px;
 }
 .thread-card.open {
   background: transparent;
