@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Prepares a fresh Amp orb (Debian) for Liame: the Bun version CI uses, dependencies, and the Electron binary.
+# Idempotent and fast on a warm snapshot. Builds for macOS happen on a Mac satellite; see AGENTS.md.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+BUN_VERSION=1.4.0 # Keep in step with .github/workflows/build.yml.
+
+step() {
+  local name=$1
+  shift
+  local start=$SECONDS
+  echo "==> $name"
+  "$@"
+  echo "    $name took $((SECONDS - start))s"
+}
+
+install_bun() {
+  if [ "$("$HOME/.bun/bin/bun" --version 2>/dev/null)" = "$BUN_VERSION" ]; then
+    echo "    bun $BUN_VERSION already installed"
+  else
+    curl -fsSL https://bun.sh/install | bash -s "bun-v$BUN_VERSION" >/dev/null
+  fi
+  # Put the pinned Bun ahead of the orb's preinstalled one in every login shell, including Amp and services.
+  local marker="# liame: pinned Bun"
+  if ! grep -Fqx "$marker" "$HOME/.bash_profile" 2>/dev/null; then
+    printf '\n%s\nexport PATH="$HOME/.bun/bin:$PATH"\n' "$marker" >>"$HOME/.bash_profile"
+  fi
+}
+
+install_deps() {
+  "$HOME/.bun/bin/bun" install --frozen-lockfile
+}
+
+# Bun does not always run Electron's postinstall, and the binary is what lets agents launch the app on Linux.
+install_electron() {
+  if [ -x node_modules/electron/dist/electron ]; then
+    echo "    electron $(cat node_modules/electron/dist/version) already present"
+  else
+    node node_modules/electron/install.js
+  fi
+}
+
+step "bun $BUN_VERSION" install_bun
+step "bun install" install_deps
+step "electron binary" install_electron
