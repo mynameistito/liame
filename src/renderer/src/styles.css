@@ -414,12 +414,14 @@ kbd {
   margin-top: 6px;
   font-size: 11px;
   line-height: 1.5;
-  color: var(--text-3);
+  color: var(--text-2);
   overflow-wrap: anywhere;
 }
 .search-status [role='status'] {
   display: inline;
-  color: var(--text-2);
+}
+.search-status [role='status'].failed {
+  color: #ff9a9a;
 }
 .search-status [role='status']::before {
   content: ' · ' / '';
