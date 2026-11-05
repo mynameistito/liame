@@ -125,7 +125,7 @@ export function Reader({ summary, detail, loading, error, mailbox, inTrash, labe
       <main className="pane reader">
         <div className="toolbar drag">{showList}</div>
         <div className="empty-reader">
-          <div>
+          <div className="reader-placeholder">
             <Mail size={28} strokeWidth={1.2} />
             <div>No message selected</div>
           </div>
