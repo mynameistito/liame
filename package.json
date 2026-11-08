@@ -2,7 +2,29 @@
   "name": "liame",
   "productName": "Liame",
   "version": "0.2.1",
-  "private": true,
+  "license": "MIT",
+  "author": "Adam Krupa",
+  "homepage": "https://github.com/pcstyle-os/liame#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pcstyle-os/liame.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pcstyle-os/liame/issues"
+  },
+  "keywords": [
+    "electron",
+    "email",
+    "mail-client",
+    "imap",
+    "smtp",
+    "macos",
+    "oled",
+    "react"
+  ],
+  "engines": {
+    "bun": ">=1.4.0"
+  },
   "description": "A quiet, OLED-dark mail client for macOS.",
   "main": "out/main/index.js",
   "scripts": {

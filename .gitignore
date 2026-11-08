@@ -4,3 +4,21 @@ dist
 .DS_Store
 .amp/portals/*
 .amp/in/
+
+# Secrets and signing material — never commit these
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.pem
+*.key
+*.keychain-db
+certs/
+
+# Logs and local editor state
+*.log
+coverage
+.idea/
+.vscode/*
+!.vscode/extensions.json

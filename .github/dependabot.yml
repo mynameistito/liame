@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+    # Electron and its toolchain move deliberately; group the rest.
+    groups:
+      dependencies:
+        patterns: ['*']
+        exclude-patterns: ['electron', 'electron-builder', 'electron-vite']
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

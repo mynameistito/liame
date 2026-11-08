@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/pcstyle-os/liame/security/advisories/new
+    about: Please report security issues privately, not as a public issue
+  - name: Releases
+    url: https://github.com/pcstyle-os/liame/releases
+    about: Download the latest build of Liame

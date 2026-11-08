@@ -1,0 +1,57 @@
+name: Bug report
+description: Something in Liame behaves wrong or breaks
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please use synthetic details only — redact email
+        addresses and never paste passwords, app passwords, or API keys.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps, starting from opening the app
+      placeholder: |
+        1. …
+        2. …
+    validations:
+      required: false
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Mail provider
+      options:
+        - Gmail
+        - Zoho
+        - Other IMAP
+        - Not mail-related
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Liame version
+      description: From the release name or Liame → About; if built from source, the commit
+      placeholder: 0.2.1
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: macOS 26 (Apple silicon)
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots (synthetic mail only), error text, or anything that might help
