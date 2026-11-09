@@ -1,6 +1,10 @@
 [workspace]
 members = ["crates/liame-core", "crates/liame-app", "crates/liame-store"]
 resolver = "3"
+exclude = ["vendor/xattr"]
+
+[patch.crates-io]
+xattr = { path = "vendor/xattr" }
 
 [workspace.package]
 version = "0.2.1"
