@@ -117,8 +117,8 @@ Sent-folder append failure must never resend an accepted SMTP submission.
 ### M0 — Baseline and development foundation
 
 - [ ] Inventory every LiameApi operation, command and preference in a parity matrix.
-- [ ] Run existing install/typecheck/tests/build and record baseline failures.
-- [ ] Add Rust workspace, pinned toolchain, formatting/lint/test commands.
+- [x] Run existing install/typecheck/tests/build and record baseline failures.
+- [x] Add Rust workspace, pinned toolchain, formatting/lint/test commands.
 - [ ] Add native CI checks without disrupting existing Electron checks/releases.
 - [ ] Define platform/CPU/minimum OS support from actual dependency probes;
       initial candidates: Windows x64, macOS arm64/x64, Linux x64.
@@ -251,4 +251,8 @@ failure accurately. Update milestone checkboxes only when evidence exists.
   protocol-library selections, OAuth scope, signing identities and update channel.
 - OAuth is not existing parity (current setup uses passwords); evaluate provider
   requirements separately and document supported authentication accurately.
-- No platform execution, baseline verification or migration completion claimed yet.
+- Windows development baseline: Bun 1.4.4 frozen install, typecheck, four tests
+  and production bundle passed. CI pins Bun 1.4.0; that exact local version has
+  not been exercised. Initial missing-dependency failures resolved by install.
+- Rust 1.98.0: core checks, formatting, Clippy and four identity/delivery tests
+  passed on Windows. Native UI and other-platform execution remain unverified.
