@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/liame-core"]
+members = ["crates/liame-core", "crates/liame-app"]
 resolver = "3"
 
 [workspace.package]
