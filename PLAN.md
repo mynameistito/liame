@@ -267,6 +267,16 @@ failure accurately. Update milestone checkboxes only when evidence exists.
   GPUI shell (10,000 virtualized rows, mouse selection, j/k/arrow navigation).
   No runtime interaction claim: Windows computer-use launch and inventory failed
   with "Computer Use native pipe is unavailable"; no app window was observed.
+- Initial native CI core tests passed on Windows, macOS and Ubuntu. Linux GPUI
+  check exposed xattr 0.2.3's use of libc's removed Linux ENOATTR alias. A local
+  dependency patch preserves upstream licenses and selects ENODATA on Linux/
+  Android. Full Linux GPUI verification must pass after this fix.
+- Native cache slice: bundled SQLite, versioned initial schema, transactional
+  UIDVALIDITY reset, summaries/raw MIME, stable folder paging and literal FTS
+  search implemented. Seven storage behavior tests pass on Windows, including
+  restart persistence, stale-batch rollback and refusing legacy/newer databases.
+  Conversations, unified inbox, sync checkpoints, retention, jobs and UI wiring
+  remain incomplete; this does not complete M2.
 
 ## Feature parity ledger
 
