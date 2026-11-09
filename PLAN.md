@@ -116,7 +116,7 @@ Sent-folder append failure must never resend an accepted SMTP submission.
 
 ### M0 — Baseline and development foundation
 
-- [ ] Inventory every LiameApi operation, command and preference in a parity matrix.
+- [x] Inventory every LiameApi operation, command and preference in a parity matrix.
 - [x] Run existing install/typecheck/tests/build and record baseline failures.
 - [x] Add Rust workspace, pinned toolchain, formatting/lint/test commands.
 - [ ] Add native CI checks without disrupting existing Electron checks/releases.
@@ -256,3 +256,45 @@ failure accurately. Update milestone checkboxes only when evidence exists.
   not been exercised. Initial missing-dependency failures resolved by install.
 - Rust 1.98.0: core checks, formatting, Clippy and four identity/delivery tests
   passed on Windows. Native UI and other-platform execution remain unverified.
+
+## Feature parity ledger
+
+All native behavior rows below are pending until their end-to-end paths are
+implemented and verified. A domain type or synthetic view does not pass a row.
+Operation names refer to `LiameApi` in `src/shared/types.ts`.
+
+| Existing operations | Native milestone | Required evidence |
+| --- | --- | --- |
+| listAccounts, testAccount, saveAccount, removeAccount | M2/M3 | Vault round trip, failed auth, edit/remove and account isolation |
+| listMailboxes, sync, syncInboxes | M3 | Folder discovery, incremental sync, reconnect and generation reset |
+| listMessages, listUnified, getThread | M2/M3 | Offline paging, tied dates, merged accounts, Sent conversation copies |
+| search, searchLocal | M3 | Cached-only scope, server pending/error states and actual server matches |
+| getMessage | M3 | Cached MIME, stale generations, reader policy and multipart fixtures |
+| setFlags, markAllRead, markAllInboxesRead | M3 | Correct folder generation and server flags across reconnect |
+| move, undoMove | M3 | MOVE/COPY fallback, UID mapping, no unsafe undo without mapping |
+| confirmPermanentDelete | M3 | Explicit confirmation and cancellation before destructive action |
+| saveDraft, send | M4 | Autosave, threading headers, MIME attachments, submission recovery |
+| pickAttachments, saveAttachment | M3/M4/M6 | Native picker/save, hostile filenames, permissions and retained parts |
+| remind, listScheduled, cancelScheduled | M5 | Snooze/send/follow-up restart, overdue processing, cancel-to-draft |
+| contextMenu, focusWindow, setZoom | M1/M6 | Actual OS menu selection, activation and scaling |
+| openExternal | M6 | Allowed schemes only, external browser and mailto behavior |
+| takePendingOpen, onEvent | M3/M6 | Notification open with no window and subscribed event lifecycle |
+| getSettings, saveSettings | M2/M5 | Persistence, secret-presence projection and null-to-clear semantics |
+| aiModels, aiStart, aiCancel, onAi | M5 | Provider selection, streamed tokens, cancellation and errors |
+| classify, setLabel | M5 | Opt-in classifier, manual override and persisted labels |
+
+Command parity (all pending): palette, compose, reply, replyAll, forward,
+draftReply, archive, trash, undo, toggleRead, toggleFlag, next, previous, search,
+assistant, brief, refresh, goInbox, filterAll, filterUnread, filterFlagged,
+toggleDarken, loadImages, settings, shortcuts, toggleSelect, selectAll,
+clearSelection, moveTo, snooze, remindMe, labelAs, junk, markAllRead, editDraft,
+nextAccount, toggleSidebar, toggleList, send, snippets, saveDraft.
+Verify command scope while editing text, platform modifiers, overrides and
+composer-only commands against `src/renderer/src/commands.ts`.
+
+Preference parity (all pending): markRead (immediate/delay/never), afterMove
+(next/previous/none), remoteImages, notifications, signature, accent, density,
+zoom, darkenEmails and conversations. Also preserve snippets, shortcut overrides,
+label definitions/engine and AI provider/model/Codex executable configuration.
+Migrate remembered contacts from renderer localStorage; do not silently discard
+them when changing runtimes.
