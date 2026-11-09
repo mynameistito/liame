@@ -1,0 +1,16 @@
+[package]
+name = "liame-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+liame-core = { path = "../liame-core" }
+rusqlite = { version = "=0.41.0", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3.27"
+
+[lints]
+workspace = true
