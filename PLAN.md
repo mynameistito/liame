@@ -119,7 +119,7 @@ Sent-folder append failure must never resend an accepted SMTP submission.
 - [x] Inventory every LiameApi operation, command and preference in a parity matrix.
 - [x] Run existing install/typecheck/tests/build and record baseline failures.
 - [x] Add Rust workspace, pinned toolchain, formatting/lint/test commands.
-- [ ] Add native CI checks without disrupting existing Electron checks/releases.
+- [x] Add native CI checks without disrupting existing Electron checks/releases.
 - [ ] Define platform/CPU/minimum OS support from actual dependency probes;
       initial candidates: Windows x64, macOS arm64/x64, Linux x64.
 - [ ] Compile and launch a minimal GPUI window with packaged fonts/assets.
@@ -256,6 +256,17 @@ failure accurately. Update milestone checkboxes only when evidence exists.
   not been exercised. Initial missing-dependency failures resolved by install.
 - Rust 1.98.0: core checks, formatting, Clippy and four identity/delivery tests
   passed on Windows. Native UI and other-platform execution remain unverified.
+- GPUI 0.2.2 published crate selected and exactly pinned. Its monolithic platform
+  API differs from upstream main (`Application::new` versus `gpui_platform`).
+  Windows workspace check and Clippy pass for the synthetic native shell.
+  Dependency `proc-macro-error2` emits a Rust future-compatibility warning;
+  track this before compiler upgrades. It is not a current compile failure.
+- Native CI has independent core and GPUI build jobs on Windows, macOS and Linux;
+  workflow YAML parses locally. Remote execution results are not yet recorded.
+- Windows debug executable build and workspace tests passed for the synthetic
+  GPUI shell (10,000 virtualized rows, mouse selection, j/k/arrow navigation).
+  No runtime interaction claim: Windows computer-use launch and inventory failed
+  with "Computer Use native pipe is unavailable"; no app window was observed.
 
 ## Feature parity ledger
 

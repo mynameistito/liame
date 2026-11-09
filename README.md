@@ -90,6 +90,31 @@ Found a vulnerability? Please report it privately — see [SECURITY.md](SECURITY
 
 ## Build from source
 
+### Native GPUI migration
+
+The native Rust application is under development alongside the existing client.
+See [PLAN.md](PLAN.md) for milestones and the feature parity ledger. The current
+native shell displays synthetic messages only; it does not access an account or
+the existing Electron profile.
+
+Install Rust through rustup and the native C++ build prerequisites for your OS,
+then run:
+
+```sh
+cargo run -p liame-app --locked
+cargo test -p liame-core --locked
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+`rust-toolchain.toml` pins the compiler and components. GPUI is pinned to the
+published 0.2.2 release, whose platform initialization uses `Application::new()`;
+upstream main has a newer split platform API. Native CI checks the shell on
+Windows, macOS and Linux, with both X11 and Wayland compiled on Linux. Runtime
+support, packaging and feature parity remain acceptance gates in the plan.
+
+### Existing Electron application
+
 You need [Bun](https://bun.sh) 1.4.0 (the version CI pins) and, to run or
 package the app, macOS on Apple silicon. Typecheck, tests, and the bundle
 also run on Linux.
