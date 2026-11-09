@@ -40,7 +40,15 @@ impl fmt::Display for StoreError {
     }
 }
 
-impl std::error::Error for StoreError {}
+impl std::error::Error for StoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Database(error) => Some(error),
+            Self::Identity(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 impl From<rusqlite::Error> for StoreError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Database(error)
@@ -218,14 +226,22 @@ impl Store {
 
     pub fn body(&self, reference: &MessageRef) -> Result<Option<Vec<u8>>> {
         ensure_current(&self.connection, reference)?;
-        let Some(id) = message_id(&self.connection, reference)? else {
-            return Ok(None);
-        };
+        // Resolve identity and body in one snapshot. A concurrent mailbox reset
+        // may reuse an integer row ID; looking it up separately can return the
+        // replacement message's body.
         Ok(self
             .connection
-            .query_row("SELECT source FROM bodies WHERE message=?1", [id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT bodies.source FROM bodies JOIN messages ON messages.id=bodies.message
+             WHERE account=?1 AND mailbox=?2 AND uid_validity=?3 AND uid=?4",
+                params![
+                    reference.account.as_str(),
+                    reference.mailbox.as_str(),
+                    reference.uid_validity.to_string(),
+                    reference.uid.get()
+                ],
+                |row| row.get(0),
+            )
             .optional()?)
     }
 
