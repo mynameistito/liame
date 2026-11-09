@@ -1,0 +1,19 @@
+[workspace]
+members = ["crates/liame-core", "crates/liame-app", "crates/liame-store"]
+resolver = "3"
+exclude = ["vendor/xattr"]
+
+[patch.crates-io]
+xattr = { path = "vendor/xattr" }
+
+[workspace.package]
+version = "0.2.1"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"

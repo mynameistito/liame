@@ -1,0 +1,56 @@
+name: Native
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Rust core (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - run: cargo fmt --all -- --check
+      - run: cargo check -p liame-core -p liame-store --locked
+      - run: cargo clippy -p liame-core -p liame-store --all-targets --locked -- -D warnings
+      - run: cargo test -p liame-core -p liame-store --locked
+
+  app:
+    name: GPUI build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake pkg-config libasound2-dev \
+            libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev libx11-dev \
+            libxcursor-dev libxi-dev libxrandr-dev libxrender-dev libssl-dev \
+            libvulkan-dev libzstd-dev
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - run: cargo check -p liame-app --locked
+      - run: cargo clippy -p liame-app --all-targets --locked -- -D warnings
+      - run: cargo build -p liame-app --locked

@@ -90,6 +90,56 @@ Found a vulnerability? Please report it privately — see [SECURITY.md](SECURITY
 
 ## Build from source
 
+### Native GPUI migration
+
+The native Rust application is under development alongside the existing client.
+See [PLAN.md](PLAN.md) for milestones and the feature parity ledger. The current
+native shell displays synthetic messages only; it does not access an account or
+the existing Electron profile.
+
+On Windows, install [Rust via rustup](https://rust-lang.org/tools/install/)
+and Visual Studio's **Desktop development with C++** workload, including MSVC
+x64/x86 tools and a Windows SDK. See the [Rust MSVC setup guide](https://rust-lang.github.io/rustup/installation/windows-msvc.html).
+Restart PowerShell after installing so Cargo is on PATH.
+
+From PowerShell in the repository:
+
+```powershell
+git switch feat/gpui-migration
+cargo run -p liame-app --locked
+```
+
+This builds and opens the native preview. The first build downloads GPUI's
+dependencies and takes longer than subsequent runs. Bun and Electron are not
+needed for the native preview. To launch an already built executable:
+
+```powershell
+.\target\debug\liame-app.exe
+```
+
+If a shell wrapper reports that Cargo is missing, invoke rustup's executable
+directly:
+
+```powershell
+& "$env:USERPROFILE\.cargo\bin\cargo.exe" run -p liame-app --locked
+```
+
+On other platforms, install Rust and the platform's native build prerequisites,
+then use the same Cargo run command. Native verification commands:
+
+```sh
+cargo test -p liame-core -p liame-store --locked
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+`rust-toolchain.toml` pins the compiler and components. GPUI is pinned to the
+published 0.2.2 release. Native CI builds the shell on Windows, macOS and Linux,
+with both X11 and Wayland enabled on Linux. Runtime support, packaging and
+feature parity remain acceptance gates in the plan.
+
+### Existing Electron application
+
 You need [Bun](https://bun.sh) 1.4.0 (the version CI pins) and, to run or
 package the app, macOS on Apple silicon. Typecheck, tests, and the bundle
 also run on Linux.

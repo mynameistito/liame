@@ -1,0 +1,12 @@
+[package]
+name = "liame-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gpui = "=0.2.2"
+
+[lints]
+workspace = true
