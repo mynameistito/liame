@@ -2930,7 +2930,6 @@ name = "liame-app"
 version = "0.2.1"
 dependencies = [
  "gpui",
- "liame-core",
 ]
 
 [[package]]

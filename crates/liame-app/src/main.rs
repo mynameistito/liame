@@ -56,10 +56,7 @@ impl Render for Shell {
                     .child(div().text_xl().child("Liame"))
                     .child("Native preview")
                     .child(div().text_color(rgb(0x9dbaf5)).child("Synthetic Inbox"))
-                    .child("10,000 fixture messages")
-                    .child(div().text_sm().text_color(rgb(0x999ba4)).child(
-                        "Development shell. Account setup and synchronization are not connected yet.",
-                    )),
+                    .child("10,000 demo messages"),
             )
             .child(
                 div()
@@ -112,15 +109,17 @@ impl Render for Shell {
                     .flex()
                     .flex_col()
                     .gap_4()
-                    .child(div().text_2xl().child(format!(
-                        "Synthetic message {}",
-                        self.selected + 1
-                    )))
+                    .child(
+                        div()
+                            .text_2xl()
+                            .child(format!("Synthetic message {}", self.selected + 1)),
+                    )
                     .child("From: fixture@example.invalid")
                     .child("To: preview@example.invalid")
-                    .child("This message is generated locally to exercise the native reader layout.")
-                    .child("Select a message with the mouse, or use j/k and the arrow keys.")
-                    .child("No mail account, credential store or Electron profile is accessed."),
+                    .child(
+                        "This is a demo mailbox. Connecting an email account is not available yet.",
+                    )
+                    .child("Select a message with the mouse, or use j/k and the arrow keys."),
             )
     }
 }
@@ -148,6 +147,7 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
+                window.set_window_title("Liame — Native preview");
                 cx.new(|cx| {
                     let focus = cx.focus_handle();
                     focus.focus(window);
